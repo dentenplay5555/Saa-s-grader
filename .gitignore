@@ -1,0 +1,15 @@
+node_modules/
+dist/
+data.db
+data.db-*
+.env
+.env.*
+*.log
+.DS_Store
+coverage/
+.vite/
+AGENTS.md
+GUIDE.md
+SCOPE.md
+SPEC.md
+.agents
