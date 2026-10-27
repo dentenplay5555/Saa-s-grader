@@ -8,6 +8,7 @@
     "dev:api": "tsx watch src/server/index.ts",
     "dev:web": "vite",
     "build": "tsc -p tsconfig.json && vite build",
+    "typecheck": "tsc --noEmit",
     "start": "node dist/server/index.js",
     "test": "vitest run"
   },

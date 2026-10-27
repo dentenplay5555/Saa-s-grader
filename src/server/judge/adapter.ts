@@ -1,4 +1,4 @@
-export type JudgeVerdict = 'AC' | 'WA' | 'TLE' | 'MLE' | 'RE' | 'CE' | 'PARTIAL';
+export type JudgeVerdict = 'AC' | 'WA' | 'TLE' | 'MLE' | 'RE' | 'CE' | 'OLE' | 'JUDGE_ERROR' | 'PARTIAL' | 'SKIPPED';
 
 export interface JudgeSubmission {
   problemSlug: string;

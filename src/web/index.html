@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TOI Grader — DSA Academy</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Prompt:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card-bg: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-muted: #8b949e;
+      --primary: #238636;
+      --primary-hover: #2ea043;
+      --danger: #da3633;
+      --danger-bg: rgba(218, 54, 51, 0.15);
+      --warning: #d29922;
+      --success: #3fb950;
+      --info: #58a6ff;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Prompt', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 0;
+      line-height: 1.5;
+    }
+
+    header {
+      background: var(--card-bg);
+      border-bottom: 1px solid var(--border);
+      padding: 0.75rem 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .brand {
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: #fff;
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .brand span { color: var(--success); }
+
+    nav a {
+      color: var(--text-muted);
+      text-decoration: none;
+      margin-left: 1rem;
+      font-size: 0.95rem;
+      transition: color 0.15s;
+    }
+    nav a:hover, nav a.active { color: #fff; }
+
+    main {
+      max-width: 1200px;
+      margin: 1.5rem auto;
+      padding: 0 1rem;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .split-layout {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem;
+      height: calc(100vh - 120px);
+    }
+    @media (max-width: 900px) {
+      .split-layout { grid-template-columns: 1fr; height: auto; }
+    }
+
+    .panel {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .panel-header {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
+      background: rgba(255,255,255,0.02);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .panel-body {
+      padding: 1rem;
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    #monaco-container {
+      width: 100%;
+      height: 100%;
+      min-height: 400px;
+    }
+
+    textarea.code-fallback {
+      width: 100%;
+      height: 100%;
+      min-height: 400px;
+      background: #090d13;
+      color: #e6edf3;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 14px;
+      padding: 1rem;
+      border: none;
+      resize: none;
+    }
+
+    button.btn-primary {
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      padding: 0.5rem 1.25rem;
+      border-radius: 6px;
+      font-weight: 500;
+      font-family: inherit;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      transition: background 0.15s;
+    }
+    button.btn-primary:hover { background: var(--primary-hover); }
+    button.btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    button.btn-danger {
+      background: var(--danger);
+      color: #fff;
+      border: none;
+      padding: 0.5rem 1.25rem;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 0.25rem 0.6rem;
+      border-radius: 12px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .badge-AC { background: rgba(63, 185, 80, 0.2); color: #3fb950; border: 1px solid #3fb950; }
+    .badge-WA { background: rgba(218, 54, 51, 0.2); color: #f85149; border: 1px solid #f85149; }
+    .badge-TLE { background: rgba(210, 153, 34, 0.2); color: #d29922; border: 1px solid #d29922; }
+    .badge-MLE { background: rgba(163, 113, 247, 0.2); color: #bc8cff; border: 1px solid #bc8cff; }
+    .badge-RE, .badge-CE, .badge-JUDGE_ERROR { background: var(--danger-bg); color: #f85149; border: 1px solid #da3633; }
+    .badge-QUEUED, .badge-COMPILING, .badge-RUNNING { background: rgba(88, 166, 255, 0.2); color: #58a6ff; border: 1px solid #58a6ff; }
+
+    .subtask-card {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      margin-bottom: 0.75rem;
+      overflow: hidden;
+    }
+    .subtask-header {
+      padding: 0.6rem 1rem;
+      background: rgba(255,255,255,0.03);
+      display: flex;
+      justify-content: space-between;
+      font-weight: 500;
+    }
+    .test-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+      gap: 0.5rem;
+      padding: 0.75rem;
+      background: rgba(0,0,0,0.2);
+    }
+    .test-chip {
+      padding: 0.4rem 0.6rem;
+      border-radius: 4px;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      font-size: 0.8rem;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .alert-box {
+      padding: 1rem;
+      border-radius: 6px;
+      margin: 1rem 0;
+      border: 1px solid;
+    }
+    .alert-error {
+      background: var(--danger-bg);
+      border-color: var(--danger);
+      color: #ff7b72;
+    }
+
+    table.data-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 1rem;
+    }
+    table.data-table th, table.data-table td {
+      padding: 0.75rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    table.data-table th { color: var(--text-muted); font-weight: 500; }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
+</head>
+<body>
+  <header>
+    <a href="#/" class="brand">DSA Academy <span>TOI Grader</span></a>
+    <nav>
+      <a href="#/">รายการโจทย์</a>
+      <a href="#/me">ประวัติการส่ง</a>
+      <a href="#/admin">ระบบผู้ดูแล (Admin)</a>
+    </nav>
+  </header>
+  <main id="app">
+    <div style="text-align:center; padding: 2rem; color: var(--text-muted);">กำลังโหลดระบบ...</div>
+  </main>
+  <script type="module" src="/main.ts"></script>
+</body>
+</html>
