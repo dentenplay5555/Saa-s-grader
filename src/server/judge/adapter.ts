@@ -1,11 +1,19 @@
 export type JudgeVerdict = 'AC' | 'WA' | 'TLE' | 'MLE' | 'RE' | 'CE' | 'OLE' | 'JUDGE_ERROR' | 'PARTIAL' | 'SKIPPED';
 
+export interface TestCaseData {
+  group: string;
+  index: number;
+  input: string;
+  expectedOutput: string;
+}
+
 export interface JudgeSubmission {
   problemSlug: string;
   language: string;
   sourceCode: string;
   timeLimitMs: number;
   memoryLimitMb: number;
+  testCases?: TestCaseData[];
 }
 
 export interface JudgeProgress {
@@ -28,6 +36,8 @@ export interface JudgeResult {
 }
 
 export interface JudgeAdapter {
+  readonly name: string;
+  readonly version: string;
   submit(input: JudgeSubmission & { judgingId: string }): Promise<{ engineJobId: string }>;
   getStatus(engineJobId: string): Promise<JudgeProgress>;
   getResult(engineJobId: string): Promise<JudgeResult>;

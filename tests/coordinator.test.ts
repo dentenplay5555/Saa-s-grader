@@ -64,6 +64,8 @@ describe('Task 3 - Job Queue & Coordinator', () => {
 
     // Faulty adapter that always throws
     const failingAdapter = {
+      name: 'failing',
+      version: '1.0',
       submit: async () => { throw new Error('Judge engine network error'); },
       getStatus: async () => ({ status: 'JUDGE_ERROR' as const }),
       getResult: async () => { throw new Error('Unreachable'); },
@@ -95,6 +97,24 @@ describe('Task 3 - Job Queue & Coordinator', () => {
     const judging = testDb.prepare('SELECT status, verdict, error_message FROM judgings WHERE id = ?').get(judgingId) as any;
     expect(judging.status).toBe('JUDGE_ERROR');
     expect(judging.verdict).toBe('JUDGE_ERROR');
+
+    const sub = testDb.prepare('SELECT status FROM submissions WHERE id = ?').get(subId) as any;
+    expect(sub.status).toBe('JUDGE_ERROR');
+  });
+
+  it('detects hanging engine and does NOT record AC/100, transitions to JUDGE_ERROR after retries', async () => {
+    const subId = createTestSubmission('hang-test-key');
+    const judgingId = createJudging(subId, testDb);
+    const hangingAdapter = new MockAdapter('hang');
+
+    // Run with maxAttempts: 1 so it immediately dead-letters on timeout
+    const processed = await processNextJob('worker-hang', hangingAdapter, testDb, 1);
+    expect(processed).toBe(false);
+
+    const judging = testDb.prepare('SELECT status, verdict, score FROM judgings WHERE id = ?').get(judgingId) as any;
+    expect(judging.status).toBe('JUDGE_ERROR');
+    expect(judging.verdict).toBe('JUDGE_ERROR');
+    expect(judging.score).toBeNull();
 
     const sub = testDb.prepare('SELECT status FROM submissions WHERE id = ?').get(subId) as any;
     expect(sub.status).toBe('JUDGE_ERROR');

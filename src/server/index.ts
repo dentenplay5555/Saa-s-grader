@@ -1,9 +1,12 @@
 import express from 'express';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { db as defaultDb } from './db.js';
-import { createJudging, defaultAdapter, processNextJob } from './judge/coordinator.js';
+import { createJudging, defaultAdapter, processNextJob, reconcileStaleJudgings } from './judge/coordinator.js';
 import { PlagiarismEngine } from './plagiarism/plagiarismEngine.js';
 import { CodeAnalyzer } from './analysis/codeAnalyzer.js';
+import { AuthUser, signAuthToken, userFromRequest } from './auth.js';
 
 export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
   const app = express();
@@ -16,11 +19,8 @@ export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
   const MAX_PENDING_SUBMISSIONS = 3;
   const MAX_SOURCE_CODE_BYTES = 64 * 1024; // 64KB
 
-  function userFromReq(req: express.Request): { id: number; email: string; name: string; role: string } | null {
-    const id = Number(req.header('X-User-Id'));
-    if (!id) return null;
-    const u = database.prepare('SELECT id, email, name, role FROM users WHERE id = ?').get(id) as any;
-    return u ?? null;
+  function userFromReq(req: express.Request): AuthUser | null {
+    return userFromRequest(req, database);
   }
 
   function writeAuditLog(actorId: number | null, action: string, targetType: string, targetId: number | null, detail?: string) {
@@ -28,6 +28,37 @@ export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
       'INSERT INTO audit_logs (actor_id, action, target_type, target_id, created_at, detail) VALUES (?,?,?,?,?,?)'
     ).run(actorId, action, targetType, targetId, new Date().toISOString(), detail ?? null);
   }
+
+  // --- Authentication Endpoints ---
+
+  app.post('/api/auth/login', (req, res) => {
+    const { email, userId } = req.body ?? {};
+    let user: any = null;
+
+    if (userId) {
+      user = database.prepare('SELECT id, email, name, role FROM users WHERE id = ?').get(userId);
+    } else if (email) {
+      user = database.prepare('SELECT id, email, name, role FROM users WHERE email = ?').get(email);
+    }
+
+    if (!user) {
+      return res.status(401).json({ error: 'User not found or invalid credentials' });
+    }
+
+    const token = signAuthToken(user);
+    res.setHeader('Set-Cookie', `session=${token}; Path=/; HttpOnly; SameSite=Lax`);
+    res.json({ ok: true, token, user });
+  });
+
+  app.post('/api/auth/logout', (_req, res) => {
+    res.setHeader('Set-Cookie', 'session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT');
+    res.json({ ok: true });
+  });
+
+  app.get('/api/auth/me', (req, res) => {
+    const u = userFromReq(req);
+    res.json({ user: u });
+  });
 
   // --- Public / Student Endpoints ---
 
@@ -100,29 +131,34 @@ export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
 
     const annotatedLessons = lessons.map(l => ({
       ...l,
-      status: progressMap.get(l.id) || 'not_started',
+      userProgress: progressMap.get(l.id) || 'not_started',
     }));
 
     res.json({
-      track,
+      track: {
+        id: track.id,
+        slug: track.slug,
+        title: track.title,
+        description: track.description,
+      },
       lessons: annotatedLessons,
     });
   });
 
   app.get('/api/lessons', (req, res) => {
-    const { stage, track, difficulty, q } = req.query;
-    let query = `
-      SELECT id, slug, stage, track_compatibility, topic, title, summary, difficulty, estimated_minutes, version
-      FROM lessons
-      WHERE published = 1
-    `;
+    const stage = req.query.stage !== undefined ? Number(req.query.stage) : undefined;
+    const track = req.query.track as string | undefined;
+    const difficulty = req.query.difficulty as string | undefined;
+    const q = req.query.q as string | undefined;
+
+    let query = 'SELECT id, slug, stage, track_compatibility, topic, title, summary, difficulty, estimated_minutes FROM lessons WHERE published = 1';
     const params: any[] = [];
 
-    if (stage !== undefined && stage !== '') {
+    if (stage !== undefined && !isNaN(stage)) {
       query += ' AND stage = ?';
-      params.push(Number(stage));
+      params.push(stage);
     }
-    if (track && (track === 'beginner' || track === 'cp')) {
+    if (track) {
       query += " AND (track_compatibility = ? OR track_compatibility = 'both')";
       params.push(track);
     }
@@ -204,16 +240,17 @@ export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
     const now = new Date().toISOString();
     const completedAt = status === 'completed' ? now : null;
 
+    // Spec rule: "completed ไม่ย้อนกลับ" - Once marked completed, status never regresses to in_progress or not_started
     database.prepare(`
       INSERT INTO lesson_progress (user_id, lesson_id, status, last_accessed_at, completed_at)
       VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(user_id, lesson_id) DO UPDATE SET
-        status = excluded.status,
+        status = CASE WHEN lesson_progress.status = 'completed' THEN 'completed' ELSE excluded.status END,
         last_accessed_at = excluded.last_accessed_at,
-        completed_at = COALESCE(excluded.completed_at, lesson_progress.completed_at)
+        completed_at = COALESCE(lesson_progress.completed_at, excluded.completed_at)
     `).run(u.id, l.id, status, now, completedAt);
 
-    writeAuditLog(u.id, 'UPDATE_PROGRESS', 'lessons', l.id, `Status set to ${status}`);
+    writeAuditLog(u.id, 'UPDATE_PROGRESS', 'lessons', l.id, `Status updated (requested: ${status})`);
     res.json({ ok: true, status, completedAt });
   });
 
@@ -315,14 +352,22 @@ export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
     ).run(u.id, p.current_version_id, language, sourceCode, 'QUEUED', idempotencyKey, createdAt);
 
     const subId = Number(info.lastInsertRowid);
-    createJudging(subId, database);
+    createJudging(subId, database, judgeAdapter);
 
     res.status(201).json({ id: subId });
   });
 
+  // Authorization checked: only the submission author or an admin can view submission details
   app.get('/api/submissions/:id', (req, res) => {
+    const u = userFromReq(req);
+    if (!u) return res.status(401).json({ error: 'unauthorized' });
+
     const sub = database.prepare('SELECT id, user_id, problem_version_id, language, status, created_at FROM submissions WHERE id = ?').get(req.params.id) as any;
     if (!sub) return res.status(404).json({ error: 'Submission not found' });
+
+    if (u.role !== 'admin' && u.id !== sub.user_id) {
+      return res.status(403).json({ error: 'forbidden' });
+    }
 
     const judging = database.prepare(
       'SELECT id, attempt, status, verdict, score, max_score, runtime_ms, memory_kb, started_at, created_at FROM judgings WHERE submission_id = ? ORDER BY attempt DESC LIMIT 1'
@@ -330,7 +375,6 @@ export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
 
     let testGroups: any[] = [];
     if (judging) {
-      // Group results aggregated safely without exposing hidden inputs/outputs
       const tests = database.prepare(
         'SELECT group_name, test_index, verdict, runtime_ms, memory_kb FROM test_results WHERE judging_id = ? ORDER BY group_name, test_index'
       ).all(judging.id) as any[];
@@ -389,8 +433,8 @@ export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
       return pid;
     });
 
-    const id = tx();
-    res.status(201).json({ id });
+    const pid = tx();
+    res.status(201).json({ id: pid, slug });
   });
 
   app.post('/api/admin/problems/:id/test-package', (req, res) => {
@@ -418,12 +462,30 @@ export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
     if (!u || u.role !== 'admin') return res.status(403).json({ error: 'forbidden' });
 
     const sub = database.prepare('SELECT id FROM submissions WHERE id = ?').get(req.params.id) as any;
-    if (!sub) return res.status(404).json({ error: 'submission not found' });
+    if (!sub) return res.status(404).json({ error: 'Submission not found' });
 
-    const judgingId = createJudging(sub.id, database);
-    writeAuditLog(u.id, 'REJUDGE', 'submissions', sub.id, `Created judging attempt ID ${judgingId}`);
+    const jid = createJudging(sub.id, database, judgeAdapter);
+    database.prepare("UPDATE submissions SET status = 'QUEUED' WHERE id = ?").run(sub.id);
 
-    res.json({ judgingId });
+    writeAuditLog(u.id, 'REJUDGE', 'submissions', sub.id, `Created judging ${jid}`);
+    res.status(202).json({ judgingId: jid });
+  });
+
+  app.post('/api/admin/rejudge', (req, res) => {
+    const u = userFromReq(req);
+    if (!u || u.role !== 'admin') return res.status(403).json({ error: 'forbidden' });
+
+    const { submissionId } = req.body ?? {};
+    if (!submissionId) return res.status(400).json({ error: 'Missing submissionId' });
+
+    const sub = database.prepare('SELECT id FROM submissions WHERE id = ?').get(submissionId) as any;
+    if (!sub) return res.status(404).json({ error: 'Submission not found' });
+
+    const jid = createJudging(submissionId, database, judgeAdapter);
+    database.prepare("UPDATE submissions SET status = 'QUEUED' WHERE id = ?").run(submissionId);
+
+    writeAuditLog(u.id, 'REJUDGE', 'submissions', submissionId, `Created judging ${jid}`);
+    res.status(202).json({ judgingId: jid });
   });
 
   app.get('/api/admin/judge-health', async (req, res) => {
@@ -447,7 +509,7 @@ export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
     });
   });
 
-  // --- Task 14: Plagiarism Detection & Code Analysis Endpoints ---
+  // --- Task 14: Plagiarism & Code Analysis Endpoints ---
 
   app.post('/api/admin/similarity/run', (req, res) => {
     const u = userFromReq(req);
@@ -456,13 +518,9 @@ export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
     const { problemId, threshold } = req.body ?? {};
     if (!problemId) return res.status(400).json({ error: 'problemId is required' });
 
-    const numThreshold = typeof threshold === 'number' ? threshold : 0.75;
-    try {
-      const result = PlagiarismEngine.runBatch(database, Number(problemId), numThreshold, u.id);
-      res.status(201).json(result);
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
+    const thresh = typeof threshold === 'number' ? threshold : 0.70;
+    const report = PlagiarismEngine.runBatch(database, Number(problemId), thresh, u.id);
+    res.status(201).json(report);
   });
 
   app.get('/api/admin/similarity/reports/:id', (req, res) => {
@@ -473,18 +531,11 @@ export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
     if (!report) return res.status(404).json({ error: 'Report not found' });
 
     const pairs = database.prepare(`
-      SELECT sp.*, sa.user_id AS user_a_id, sb.user_id AS user_b_id,
-             ua.name AS user_a_name, ub.name AS user_b_name
-      FROM similarity_pairs sp
-      JOIN submissions sa ON sp.submission_a = sa.id
-      JOIN submissions sb ON sp.submission_b = sb.id
-      JOIN users ua ON sa.user_id = ua.id
-      JOIN users ub ON sb.user_id = ub.id
-      WHERE sp.report_id = ?
-      ORDER BY sp.score DESC
+      SELECT id, submission_a, submission_b, score, matched_tokens, reviewed_status, reviewed_by, updated_at, note
+      FROM similarity_pairs WHERE report_id = ? ORDER BY score DESC
     `).all(report.id);
 
-    res.json({ ...report, pairs });
+    res.json({ report, pairs });
   });
 
   app.patch('/api/admin/similarity/pairs/:id', (req, res) => {
@@ -493,62 +544,58 @@ export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
 
     const { reviewed_status, note } = req.body ?? {};
     if (!reviewed_status || !['pending', 'cleared', 'confirmed'].includes(reviewed_status)) {
-      return res.status(400).json({ error: 'Valid reviewed_status (pending|cleared|confirmed) required' });
+      return res.status(400).json({ error: 'Invalid reviewed_status' });
     }
-
-    const pair = database.prepare('SELECT id FROM similarity_pairs WHERE id = ?').get(req.params.id) as any;
-    if (!pair) return res.status(404).json({ error: 'Similarity pair not found' });
 
     database.prepare(`
       UPDATE similarity_pairs
-      SET reviewed_status = ?, note = ?, reviewed_by = ?, updated_at = datetime('now')
+      SET reviewed_status = ?, reviewed_by = ?, updated_at = datetime('now'), note = ?
       WHERE id = ?
-    `).run(reviewed_status, note || null, u.id, pair.id);
+    `).run(reviewed_status, u.id, note || null, req.params.id);
 
-    writeAuditLog(u.id, 'REVIEW_PLAGIARISM_PAIR', 'similarity_pairs', pair.id, `Status: ${reviewed_status}`);
-    res.json({ ok: true, id: pair.id, reviewed_status });
+    writeAuditLog(u.id, 'REVIEW_PLAGIARISM_PAIR', 'similarity_pairs', Number(req.params.id), `Status: ${reviewed_status}`);
+    res.json({ ok: true, id: req.params.id, reviewed_status });
   });
 
   app.get('/api/submissions/:id/hints', (req, res) => {
     const u = userFromReq(req);
-    const sub = database.prepare(`
-      SELECT s.id, s.user_id, s.source_code, s.problem_version_id, pv.tags_json
-      FROM submissions s
-      JOIN problem_versions pv ON s.problem_version_id = pv.id
-      WHERE s.id = ?
-    `).get(req.params.id) as any;
+    if (!u) return res.status(401).json({ error: 'unauthorized' });
 
+    const sub = database.prepare('SELECT id, user_id, problem_version_id, source_code FROM submissions WHERE id = ?').get(req.params.id) as any;
     if (!sub) return res.status(404).json({ error: 'Submission not found' });
-    if (!u || (u.role !== 'admin' && u.id !== sub.user_id)) {
+
+    if (u.role !== 'admin' && u.id !== sub.user_id) {
       return res.status(403).json({ error: 'forbidden' });
     }
 
-    const tags = sub.tags_json ? JSON.parse(sub.tags_json) : [];
+    const pv = database.prepare('SELECT tags_json FROM problem_versions WHERE id = ?').get(sub.problem_version_id) as any;
+    const tags: string[] = pv?.tags_json ? JSON.parse(pv.tags_json) : [];
+
     const hints = CodeAnalyzer.analyze(sub.source_code, tags);
     res.json({ submissionId: sub.id, hints });
   });
 
-  // --- Task 16: Local Bridge & Problem Package Endpoints ---
+  // --- Task 16: Local Bridge Integration Endpoints ---
 
   app.post('/api/bridge/pair', (req, res) => {
     const u = userFromReq(req);
     if (!u) return res.status(401).json({ error: 'unauthorized' });
 
     const { deviceName } = req.body ?? {};
-    const token = 'brg_' + crypto.randomBytes(24).toString('hex');
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString(); // 15 minutes
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString(); // 15 mins expiry
 
     const info = database.prepare(`
       INSERT INTO bridge_tokens (user_id, token, device_name, expires_at)
       VALUES (?, ?, ?, ?)
-    `).run(u.id, token, deviceName || 'Local IDE', expiresAt);
+    `).run(u.id, rawToken, deviceName || 'Local Machine', expiresAt);
 
     writeAuditLog(u.id, 'PAIR_BRIDGE', 'bridge_tokens', Number(info.lastInsertRowid), `Device: ${deviceName}`);
+
     res.status(201).json({
-      id: Number(info.lastInsertRowid),
-      token,
-      deviceName: deviceName || 'Local IDE',
-      expiresAt
+      id: info.lastInsertRowid,
+      pairingToken: rawToken,
+      expiresAt,
     });
   });
 
@@ -558,9 +605,7 @@ export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
 
     const tokenRow = database.prepare('SELECT id, user_id FROM bridge_tokens WHERE id = ?').get(req.params.id) as any;
     if (!tokenRow) return res.status(404).json({ error: 'Token not found' });
-    if (tokenRow.user_id !== u.id && u.role !== 'admin') {
-      return res.status(403).json({ error: 'forbidden' });
-    }
+    if (u.role !== 'admin' && tokenRow.user_id !== u.id) return res.status(403).json({ error: 'forbidden' });
 
     database.prepare("UPDATE bridge_tokens SET revoked_at = datetime('now') WHERE id = ?").run(tokenRow.id);
     writeAuditLog(u.id, 'REVOKE_BRIDGE', 'bridge_tokens', tokenRow.id);
@@ -572,13 +617,18 @@ export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
     if (!p) return res.status(404).json({ error: 'Problem not found' });
 
     const v = database.prepare(`
-      SELECT id, statement_md, time_limit_ms, memory_limit_mb, solution_cpp17
+      SELECT id, statement_md, time_limit_ms, memory_limit_mb
       FROM problem_versions WHERE id = ?
     `).get(p.current_version_id) as any;
 
     if (!v) return res.status(404).json({ error: 'Problem version not found' });
 
-    // Extract public samples from statement or default template (NEVER leak hidden test package!)
+    const pkg = database.prepare('SELECT manifest FROM test_packages WHERE problem_version_id = ?').get(v.id) as any;
+    const manifest = pkg?.manifest ? JSON.parse(pkg.manifest) : null;
+    const samples = manifest?.publicSamples || [
+      { index: 1, input: "2 3\n", output: "5\n" }
+    ];
+
     const starterTemplate = `// Solution for: ${p.title}\n#include <iostream>\nusing namespace std;\n\nint main() {\n    ios_base::sync_with_stdio(false);\n    cin.tie(NULL);\n    // Write your code here\n    return 0;\n}\n`;
 
     res.json({
@@ -589,9 +639,7 @@ export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
       timeLimitMs: v.time_limit_ms,
       memoryLimitMb: v.memory_limit_mb,
       starterCode: starterTemplate,
-      samples: [
-        { index: 1, input: "2 3\n", output: "5\n" }
-      ]
+      samples,
     });
   });
 
@@ -626,12 +674,43 @@ export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
     res.json({ ok: true, key, value });
   });
 
+  // Centralized JSON Error Handler: Never return raw HTML stack traces
+  app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    if (err?.code === 'SQLITE_CONSTRAINT_UNIQUE' || err?.message?.includes('UNIQUE constraint failed')) {
+      return res.status(409).json({ error: 'Conflict: A resource with this identifier already exists' });
+    }
+    res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
+  });
+
+  // Serve production web application bundle if built
+  const webDist = path.join(process.cwd(), 'dist', 'web');
+  if (fs.existsSync(webDist)) {
+    app.use(express.static(webDist));
+    app.get('*', (req, res, next) => {
+      if (req.path.startsWith('/api')) return next();
+      res.sendFile(path.join(webDist, 'index.html'));
+    });
+  }
+
   return app;
 }
 
 export function startWorker(database = defaultDb, judgeAdapter = defaultAdapter, intervalMs = 500) {
   let isRunning = false;
+  let watchdogCounter = 0;
+
   const timer = setInterval(async () => {
+    // Run watchdog every 30 seconds (~60 ticks at 500ms)
+    watchdogCounter++;
+    if (watchdogCounter >= 60) {
+      watchdogCounter = 0;
+      try {
+        reconcileStaleJudgings(120000, 3, database);
+      } catch {
+        // ignore watchdog error
+      }
+    }
+
     if (isRunning) return;
     isRunning = true;
     try {
@@ -645,6 +724,7 @@ export function startWorker(database = defaultDb, judgeAdapter = defaultAdapter,
       isRunning = false;
     }
   }, intervalMs);
+
   return () => clearInterval(timer);
 }
 

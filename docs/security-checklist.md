@@ -4,31 +4,33 @@
 
 ---
 
-## 1. Sandbox Isolation Checklist (สำหรับ Self-Hosted Sandbox)
+## 1. Sandbox Isolation Checklist (สำหรับ Self-Hosted Sandbox ใน Phase 5)
+
+> **สถานะปัจจุบัน:** โหมด MVP ใช้ Hosted Judge API (Judge0) รายการด้านล่างเป็นสเปกความปลอดภัยที่กำหนดไว้สำหรับการตั้ง Bare-metal Judgehost ในอนาคต ซึ่ง **ยังไม่ได้ทดสอบบนเครื่อง Bare-metal ของตนเอง**
 
 ### 1.1 สิทธิ์และ Namespaces
-- [x] **Unprivileged User:** โปรแกรมผู้ใช้รันใต้ user พิเศษที่ไม่มีสิทธิ์ `sudo` (`nobody` หรือ isolate sandbox user)
-- [x] **PID Namespace:** โปรแกรมเห็นเฉพาะ process ของตัวเอง ไม่เห็น process อื่นของระบบหรือของ Coordinator
-- [x] **Mount Namespace:** Mount namespace แยกเฉพาะ ไม่อนุญาตให้ mount หรือ unmount เพิ่มเติม
-- [x] **Network Namespace:** ไม่มี network interface ภายนอก (ปิด network สมบูรณ์ ป้องกัน reverse shell, DNS query, หรือ scan เครื่องในวง LAN)
-- [x] **IPC & UTS Namespace:** แยกออกจาก host ไม่สามารถแชร์ shared memory หรือเปลี่ยน hostname ได้
+- [ ] **Unprivileged User:** โปรแกรมผู้ใช้รันใต้ user พิเศษที่ไม่มีสิทธิ์ `sudo` (`nobody` หรือ isolate sandbox user) — *ยังไม่ได้ทดสอบบน bare-metal host*
+- [ ] **PID Namespace:** โปรแกรมเห็นเฉพาะ process ของตัวเอง ไม่เห็น process อื่นของระบบหรือของ Coordinator — *ยังไม่ได้ทดสอบบน bare-metal host*
+- [ ] **Mount Namespace:** Mount namespace แยกเฉพาะ ไม่อนุญาตให้ mount หรือ unmount เพิ่มเติม — *ยังไม่ได้ทดสอบบน bare-metal host*
+- [ ] **Network Namespace:** ไม่มี network interface ภายนอก (ปิด network สมบูรณ์ ป้องกัน reverse shell, DNS query, หรือ scan เครื่องในวง LAN) — *ยังไม่ได้ทดสอบบน bare-metal host*
+- [ ] **IPC & UTS Namespace:** แยกออกจาก host ไม่สามารถแชร์ shared memory หรือเปลี่ยน hostname ได้ — *ยังไม่ได้ทดสอบบน bare-metal host*
 
 ### 1.2 Resource Control (cgroups v2 & rlimit)
-- [x] **CPU Limiting:** กำหนด quota ตาม `time_limit_ms` (วัดทั้ง CPU time และ Wall time ป้องกัน sleep)
-- [x] **Memory Limiting:** กำหนด memory limit รวม swap = 0 (ห้ามใช้ swap ป้องกัน thrashing)
-- [x] **Process / Thread Limit (`pids.max`):** จำกัดไม่เกิน 1–4 processes เพื่อบล็อก Fork bomb ทันที
-- [x] **File Size Limit (`RLIMIT_FSIZE`):** จำกัดขนาดไฟล์ที่เขียนไม่เกิน 16MB ป้องกัน Disk Flood
-- [x] **Core Dump Disabled (`RLIMIT_CORE = 0`):** ปิดการสร้าง core dump ป้องกันขโมยหน่วยความจำ
+- [ ] **CPU Limiting:** กำหนด quota ตาม `time_limit_ms` (วัดทั้ง CPU time และ Wall time ป้องกัน sleep) — *ยังไม่ได้ทดสอบบน bare-metal host*
+- [ ] **Memory Limiting:** กำหนด memory limit รวม swap = 0 (ห้ามใช้ swap ป้องกัน thrashing) — *ยังไม่ได้ทดสอบบน bare-metal host*
+- [ ] **Process / Thread Limit (`pids.max`):** จำกัดไม่เกิน 1–4 processes เพื่อบล็อก Fork bomb ทันที — *ยังไม่ได้ทดสอบบน bare-metal host*
+- [ ] **File Size Limit (`RLIMIT_FSIZE`):** จำกัดขนาดไฟล์ที่เขียนไม่เกิน 16MB ป้องกัน Disk Flood — *ยังไม่ได้ทดสอบบน bare-metal host*
+- [ ] **Core Dump Disabled (`RLIMIT_CORE = 0`):** ปิดการสร้าง core dump ป้องกันขโมยหน่วยความจำ — *ยังไม่ได้ทดสอบบน bare-metal host*
 
 ### 1.3 Filesystem & System Calls (Seccomp)
-- [x] **Read-only Root:** Filesystem หลักเป็น Read-Only
-- [x] **Tmpfs Sandbox:** ไดเรกทอรีทำงานเป็น tmpfs ขนาดจำกัด และถูกล้าง (cleanup) ทันทีหลังโปรแกรมจบ
-- [x] **Hidden Data Protection:** โปรแกรมผู้ใช้ไม่สามารถเข้าถึง `/etc/passwd`, `/proc` เต็มรูปแบบ, หรือโฟลเดอร์เก็บ expected output ของโจทย์
-- [x] **Seccomp Allowlist:** อนุญาตเฉพาะ system calls มาตรฐานที่โปรแกรมคำนวณต้องใช้ บล็อก `socket`, `connect`, `ptrace`, `mount`, `reboot`, `fork`
+- [ ] **Read-only Root:** Filesystem หลักเป็น Read-Only — *ยังไม่ได้ทดสอบบน bare-metal host*
+- [ ] **Tmpfs Sandbox:** ไดเรกทอรีทำงานเป็น tmpfs ขนาดจำกัด และถูกล้าง (cleanup) ทันทีหลังโปรแกรมจบ — *ยังไม่ได้ทดสอบบน bare-metal host*
+- [ ] **Hidden Data Protection:** โปรแกรมผู้ใช้ไม่สามารถเข้าถึง `/etc/passwd`, `/proc` เต็มรูปแบบ, หรือโฟลเดอร์เก็บ expected output ของโจทย์ — *ยังไม่ได้ทดสอบบน bare-metal host*
+- [ ] **Seccomp Allowlist:** อนุญาตเฉพาะ system calls มาตรฐานที่โปรแกรมคำนวณต้องใช้ บล็อก `socket`, `connect`, `ptrace`, `mount`, `reboot`, `fork` — *ยังไม่ได้ทดสอบบน bare-metal host*
 
 ### 1.4 Compilation Stage
-- [x] แยก sandbox ของขั้นตอน compile ออกจาก runtime
-- [x] จำกัดทรัพยากรการ compile (CPU 10s, RAM 512MB) ป้องกัน Template Bomb, `#include` ลึก, และ `#embed` ไฟล์ใหญ่
+- [ ] แยก sandbox ของขั้นตอน compile ออกจาก runtime — *ยังไม่ได้ทดสอบบน bare-metal host*
+- [ ] จำกัดทรัพยากรการ compile (CPU 10s, RAM 512MB) ป้องกัน Template Bomb, `#include` ลึก, และ `#embed` ไฟล์ใหญ่ — *ยังไม่ได้ทดสอบบน bare-metal host*
 
 ---
 
@@ -38,18 +40,17 @@
 - [x] **PDPA Compliance:** ไม่ส่งข้อมูลส่วนบุคคล (Email, User ID, ชื่อ-สกุล) ไปยัง Judge0 โดยเด็ดขาด ส่งเฉพาะ Anonymous Job ID (`judgingId`) และโค้ด
 - [x] **Source Code Retention:** โค้ดของนักเรียนเก็บในฐานข้อมูลเพื่อตรวจผลเท่านั้น ไม่นำไปเทรนโมเดลภายนอก
 - [x] **Output Truncation:** ข้อความ stdout / stderr / compile output ถูกจำกัดขนาด (truncate) ฝั่ง server ไม่ส่ง raw stderr ขนาดยักษ์เข้าฐานข้อมูล
+- [x] **Test Package Stdin/Expected Output:** ส่งคู่ทดสอบ (`stdin`, `expected_output`) ชัดเจนราย test case ป้องกันโปรแกรมที่ไม่พิมพ์คำตอบได้ Accepted
 
 ---
 
-## 3. Attack Vector Test Matrix
+## 3. Attack Vector Matrix (การรับมือของระบบในระดับ API & Server)
 
-| Attack Vector | กลไกที่ใช้ป้องกัน | Verdict ที่คาดหวัง |
+| Attack Vector | กลไกที่ระบบเราควบคุม | สถานะการทดสอบ |
 |---|---|:---:|
-| Fork bomb (`while(fork()){}`) | `pids.max = 1` หรือ rlimit | `RE` |
-| Infinite loop (`while(1){}`) | CPU + Wall time limit | `TLE` |
-| Memory exhaustion (`malloc(2GB)`) | cgroups `memory.max`, swap=0 | `MLE` |
-| Output flood (`while(1) puts("A");`) | `RLIMIT_FSIZE`, max stdout buffer | `OLE` / `TLE` |
-| File snooping (`ifstream("/etc/passwd")`) | Mount namespace, unprivileged user | `RE` / `WA` (เปิดไม่ได้) |
-| Reverse shell / socket connection | Network namespace (no interface) | `RE` (Syscall blocked) |
-| Compiler template bomb | Compiler timeout limit | `CE` / `TLE` |
-| Spamming submissions | API Rate limiter (10/min) + Quota | `HTTP 429` |
+| Spamming submissions | API Rate limiter (10/min/user) + In-flight Quota | [x] ผ่านการทดสอบ (HTTP 429) |
+| ID enumeration scraping | Role & Ownership check บน `GET /api/submissions/:id` | [x] ผ่านการทดสอบ (HTTP 403) |
+| Privilege escalation via header | เลิกใช้ `X-User-Id`, ใช้ HMAC-SHA256 Token เท่านั้น | [x] ผ่านการทดสอบ (HTTP 401) |
+| Web RCE via Local Bridge | ตัด `/bridge/run-sample` ออก, ตรวจ Host & Origin ตรงตัว | [x] ผ่านการทดสอบ (HTTP 403) |
+| Engine hang / stuck queue | Watchdog timeout + retry backoff + dead-letter | [x] ผ่านการทดสอบ (Throw/Reclaim) |
+| Fork bomb / Infinite loop ในโค้ดผู้ใช้ | พึ่งพา Sandbox ฝั่ง Judge0 (Hosted) | [ ] ยังไม่ได้ทดสอบบน bare-metal เราเอง |

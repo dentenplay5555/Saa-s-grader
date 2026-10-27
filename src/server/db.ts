@@ -96,7 +96,33 @@ export function seedDb(targetDb: Database.Database = db) {
       'ใช้ตัวแปรประเภท long long เพื่อป้องกัน overflow',
       'DSA Academy Original'
     );
-    targetDb.prepare("UPDATE problems SET current_version_id = ? WHERE id = ?").run(vInfo1.lastInsertRowid, pInfo1.lastInsertRowid);
+    const apbVersionId = Number(vInfo1.lastInsertRowid);
+    targetDb.prepare("UPDATE problems SET current_version_id = ? WHERE id = ?").run(apbVersionId, pInfo1.lastInsertRowid);
+
+    // Test package manifest for A + B
+    targetDb.prepare("INSERT INTO test_packages (problem_version_id, manifest, checksum) VALUES (?,?,?)").run(
+      apbVersionId,
+      JSON.stringify({
+        problemSlug: 'a-plus-b',
+        version: 1,
+        publicSamples: [
+          { index: 1, input: "2 3\n", output: "5\n" }
+        ],
+        subtasks: [
+          {
+            name: 'subtask1',
+            score: 100,
+            mode: 'all',
+            tests: [
+              { index: 1, input: "2 3\n", expectedOutput: "5\n" },
+              { index: 2, input: "100 200\n", expectedOutput: "300\n" },
+              { index: 3, input: "1000000000 1000000000\n", expectedOutput: "2000000000\n" }
+            ]
+          }
+        ]
+      }),
+      'sha256-apb-package-v1'
+    );
 
     // Problem 2: Range Sum Query (Judge-backed Prefix Sum Problem)
     const pInfo2 = targetDb.prepare("INSERT INTO problems (slug, title) VALUES (?,?)").run('range-sum-query', 'Range Sum Query (การหาผลรวมช่วง)');
@@ -163,9 +189,29 @@ export function seedDb(targetDb: Database.Database = db) {
       JSON.stringify({
         problemSlug: 'range-sum-query',
         version: 1,
+        publicSamples: [
+          { index: 1, input: "5 3\n1 2 3 4 5\n1 3\n2 4\n1 5\n", output: "6\n9\n15\n" }
+        ],
         subtasks: [
-          { name: 'subtask1', score: 30, testCount: 5 },
-          { name: 'subtask2', score: 70, testCount: 15 },
+          {
+            name: 'subtask1',
+            score: 30,
+            mode: 'all',
+            tests: [
+              { index: 1, input: "5 3\n1 2 3 4 5\n1 3\n2 4\n1 5\n", expectedOutput: "6\n9\n15\n" },
+              { index: 2, input: "4 2\n10 20 30 40\n1 1\n4 4\n", expectedOutput: "10\n40\n" }
+            ]
+          },
+          {
+            name: 'subtask2',
+            score: 70,
+            mode: 'all',
+            dependsOn: ['subtask1'],
+            tests: [
+              { index: 3, input: "5 3\n-1 -2 3 4 -5\n1 2\n3 4\n1 5\n", expectedOutput: "-3\n7\n-1\n" },
+              { index: 4, input: "3 1\n1000000000 1000000000 1000000000\n1 3\n", expectedOutput: "3000000000\n" }
+            ]
+          }
         ],
       }),
       'sha256-rsq-prefix-sum-package-v1'

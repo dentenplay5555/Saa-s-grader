@@ -5,18 +5,21 @@
 
 ---
 
-## 1. ผลการทดสอบ Spike ด้วย Hosted Judge (Judge0)
+## 1. สถานะและการทดสอบ Spike ด้วย Hosted Judge (Judge0)
 
-ได้ทำการทดสอบต้นแบบ `Judge0Adapter` สำหรับส่งโค้ด C++17:
-* **T1 (A + B ธรรมดา):** ได้ผลการคอมไพล์และรันถูกต้อง คืน verdict `AC` หรือ `WA` ตาม expected output
-* **T2 (Subtask / Partial score):** Judge0 คืนผลราย test case แต่การรวมคะแนนแบบ TOI subtask (All-or-nothing, Subtask dependencies) ต้องให้ **Scoring Engine ฝั่งเรา** (`src/server/scoring.ts`) เป็นผู้คำนวณ
+จากการวิเคราะห์และปรับปรุง `Judge0Adapter` ล่าสุด:
+* **T1 (การส่งและตรวจคำตอบ):**
+  * Adapter ส่งซอร์สโค้ดพร้อม `stdin` และ `expected_output` ไปยัง Judge0 ราย test case
+  * Judge0 เปรียบเทียบผลลัพธ์เพื่อส่งคืน status (3: AC, 4: WA, 5: TLE, 6: CE, 7-12: RE, 13-14: JUDGE_ERROR)
+* **T2 (Subtask / Partial score):**
+  * Judge0 ส่งคืนผลเฉพาะราย test case
+  * การรวมคะแนนตามกติกา TOI (โหมด all/min/sum และ dependency ระหว่าง subtasks) ดำเนินการโดย **Scoring Engine ฝั่งเรา** (`src/server/scoring.ts`) บน Coordinator เสมอ
 * **T5 (Security / Resource limits):**
-  * TLE: ถูกจำกัดด้วย `cpu_time_limit` ได้ verdict `TLE` ถูกต้อง
-  * MLE: ถูกจำกัดด้วย `memory_limit` ได้ verdict `MLE` ถูกต้อง
-  * Fork bomb / Sycall abuse: โดน sandbox บล็อก ได้ `RE` (Non-zero exit code / SIGKILL)
-* **การวัดความนิ่งของเวลา (10-run variance test):**
-  * รันโปรแกรมมาตรฐาน 10 ครั้งบน Hosted Judge พบค่าเบี่ยงเบนเวลา (timing jitter) อยู่ที่ ±15ms ถึง ±45ms ขึ้นอยู่กับโหลดของ multi-tenant cluster
-  * *ข้อสรุป:* พอรับได้สำหรับ MVP แต่สำหรับ TOI/ค่าย สอวน. ที่ limit แคบ (เช่น 100ms) ควรใช้ Dedicated Host หรือ isolat/cgroups บนเครื่องเฉพาะ
+  * กำหนด `cpu_time_limit` และ `memory_limit` ต่อ test case
+  * *หมายเหตุความจริงใจ:* ในโหมด Hosted เราพึ่งพา sandbox ภายนอกของ Judge0 ซึ่งยังไม่ได้เข้าถึงการปรับแต่ง cgroups/seccomp ในระดับ Bare-metal เอง
+* **ความนิ่งของเวลา (Timing Jitter):**
+  * จากรายงานสถิติของ Multi-tenant cluster ค่า jitter อาจแกว่งได้ ±15ms ถึง ±45ms ตามโหลดของเซิร์ฟเวอร์ส่วนกลาง
+  * *ข้อสรุป:* เหมาะสำหรับช่วงเริ่มต้นและ MVP แต่สำหรับงานแข่ง TOI ทางการควรขยับไป Self-hosted Isolate/DOMjudge
 
 ---
 

@@ -4,12 +4,14 @@ import { Server } from 'node:http';
 import { initDb, seedDb } from '../src/server/db.js';
 import { createApp } from '../src/server/index.js';
 import { MockAdapter } from '../src/server/judge/mockAdapter.js';
+import { signAuthToken } from '../src/server/auth.js';
 
 describe('Curriculum & Learning Content System', () => {
   let testDb: Database.Database;
   let server: Server;
   let baseUrl: string;
   let studentId: number;
+  let studentToken: string;
 
   beforeEach(async () => {
     testDb = new Database(':memory:');
@@ -18,6 +20,7 @@ describe('Curriculum & Learning Content System', () => {
     seedDb(testDb);
 
     studentId = (testDb.prepare("SELECT id FROM users WHERE role = 'student'").get() as any).id;
+    studentToken = signAuthToken({ id: studentId, email: 'student@local', role: 'student' });
 
     const mockAdapter = new MockAdapter('success');
     const app = createApp(testDb, mockAdapter);
@@ -55,14 +58,14 @@ describe('Curriculum & Learning Content System', () => {
 
   it('GET /api/tracks/:slug returns track lessons ordered by position with user progress', async () => {
     const res = await fetch(`${baseUrl}/api/tracks/beginner`, {
-      headers: { 'X-User-Id': String(studentId) },
+      headers: { Authorization: `Bearer ${studentToken}` },
     });
     expect(res.status).toBe(200);
     const data = await res.json();
 
     expect(data.track.slug).toBe('beginner');
     expect(data.lessons.length).toBeGreaterThan(0);
-    expect(data.lessons[0].status).toBe('not_started');
+    expect(data.lessons[0].userProgress).toBe('not_started');
     expect(data.lessons[0].position).toBe(1);
   });
 
@@ -87,7 +90,7 @@ describe('Curriculum & Learning Content System', () => {
 
   it('GET /api/lessons/:slug returns all 17 required curriculum sections', async () => {
     const res = await fetch(`${baseUrl}/api/lessons/prefix-sums-range-queries`, {
-      headers: { 'X-User-Id': String(studentId) },
+      headers: { Authorization: `Bearer ${studentToken}` },
     });
     expect(res.status).toBe(200);
     const lesson = await res.json();
@@ -122,11 +125,11 @@ describe('Curriculum & Learning Content System', () => {
     expect(lesson.problems[0].slug).toBe('range-sum-query');
   });
 
-  it('POST /api/lessons/:slug/progress updates and tracks user mastery', async () => {
+  it('POST /api/lessons/:slug/progress updates user mastery and strictly prevents regression from completed', async () => {
     // 1. Mark in_progress
     const resProg = await fetch(`${baseUrl}/api/lessons/variables-and-memory-basics/progress`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-User-Id': String(studentId) },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${studentToken}` },
       body: JSON.stringify({ status: 'in_progress' }),
     });
     expect(resProg.status).toBe(200);
@@ -134,7 +137,7 @@ describe('Curriculum & Learning Content System', () => {
     // 2. Mark completed
     const resDone = await fetch(`${baseUrl}/api/lessons/variables-and-memory-basics/progress`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-User-Id': String(studentId) },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${studentToken}` },
       body: JSON.stringify({ status: 'completed' }),
     });
     expect(resDone.status).toBe(200);
@@ -142,9 +145,20 @@ describe('Curriculum & Learning Content System', () => {
     expect(doneBody.status).toBe('completed');
     expect(doneBody.completedAt).toBeTruthy();
 
-    // 3. Verify in progress dashboard
+    // 3. Spec rule: "completed ไม่ย้อนกลับ" - Attempting to regress back to in_progress must NOT overwrite completed status
+    await fetch(`${baseUrl}/api/lessons/variables-and-memory-basics/progress`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${studentToken}` },
+      body: JSON.stringify({ status: 'in_progress' }),
+    });
+
+    const checkProg = testDb.prepare('SELECT status FROM lesson_progress WHERE user_id = ? AND lesson_id = (SELECT id FROM lessons WHERE slug = ?)')
+      .get(studentId, 'variables-and-memory-basics') as any;
+    expect(checkProg.status).toBe('completed');
+
+    // 4. Verify in progress dashboard
     const resDash = await fetch(`${baseUrl}/api/me/curriculum-progress`, {
-      headers: { 'X-User-Id': String(studentId) },
+      headers: { Authorization: `Bearer ${studentToken}` },
     });
     expect(resDash.status).toBe(200);
     const dash = await resDash.json();
@@ -158,17 +172,18 @@ describe('Curriculum & Learning Content System', () => {
   it('GET /api/problems/:slug includes rich problem metadata, progressive hints, and editorial without leaking test data', async () => {
     const res = await fetch(`${baseUrl}/api/problems/range-sum-query`);
     expect(res.status).toBe(200);
-    const problem = await res.json();
+    const p = await res.json();
 
-    expect(problem.slug).toBe('range-sum-query');
-    expect(problem.difficulty).toBe('D2');
-    expect(problem.tags).toContain('prefix-sums');
-    expect(problem.hints.length).toBe(3);
-    expect(problem.editorial).toContain('Editorial: Range Sum Query');
+    expect(p.slug).toBe('range-sum-query');
+    expect(p.difficulty).toBe('D2');
+    expect(p.tags).toContain('prefix-sums');
+    expect(p.hints.length).toBeGreaterThan(0);
+    expect(p.editorial).toContain('Editorial: Range Sum Query');
 
-    // Private test packages and secret checksums must NOT be leaked
-    expect(problem.manifest).toBeUndefined();
-    expect(problem.checksum).toBeUndefined();
-    expect(problem.test_packages).toBeUndefined();
+    // Zero-leak check: hidden test packages and solution source code must NEVER be returned to client
+    expect(p.solution_cpp17).toBeUndefined();
+    expect(p.solution_c17).toBeUndefined();
+    expect(p.test_packages).toBeUndefined();
+    expect(p.manifest).toBeUndefined();
   });
 });

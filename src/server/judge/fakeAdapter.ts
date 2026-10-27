@@ -1,6 +1,8 @@
 import { JudgeAdapter, JudgeProgress, JudgeResult, JudgeSubmission } from './adapter.js';
 
 export class FakeJudgeAdapter implements JudgeAdapter {
+  readonly name = 'fake';
+  readonly version = '1.0';
   private jobs = new Map<string, { status: JudgeProgress['status']; result: JudgeResult }>();
 
   async submit(input: JudgeSubmission & { judgingId: string }) {

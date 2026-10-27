@@ -38,19 +38,44 @@ if (typeof window !== 'undefined') {
 }
 
 async function api(path: string, opts?: RequestInit) {
+  const token = localStorage.getItem('auth_token');
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(opts?.headers as Record<string, string> || {}),
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
   const res = await fetch(path, {
     ...opts,
-    headers: {
-      'X-User-Id': '1',
-      'Content-Type': 'application/json',
-      ...(opts?.headers || {}),
-    },
+    headers,
   });
   if (!res.ok) {
     const errorBody = await res.json().catch(() => ({ error: res.statusText }));
     throw errorBody;
   }
   return res.json();
+}
+
+async function ensureAuth() {
+  let token = localStorage.getItem('auth_token');
+  if (!token) {
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'student@local' }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        localStorage.setItem('auth_token', data.token);
+        localStorage.setItem('auth_user', JSON.stringify(data.user));
+      }
+    } catch {
+      // offline or server unavailable
+    }
+  }
 }
 
 // -------------------------------------------------------------
@@ -1068,4 +1093,4 @@ function route() {
 }
 
 window.addEventListener('hashchange', route);
-route();
+ensureAuth().finally(() => route());

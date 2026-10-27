@@ -1,19 +1,35 @@
 import Database from 'better-sqlite3';
 import { db as defaultDb } from '../db.js';
-import { JudgeAdapter } from './adapter.js';
+import { JudgeAdapter, TestCaseData, JudgeVerdict } from './adapter.js';
 import { FakeJudgeAdapter } from './fakeAdapter.js';
 import { Judge0Adapter } from './judge0Adapter.js';
-import { claimJob, completeJob, failJob, enqueueJob } from './jobQueue.js';
+import { claimJob, completeJob, failJob, enqueueJob, reclaimStaleJobs } from './jobQueue.js';
+import { evaluateSubmissionScore, GroupOutcome, SubtaskMode } from '../scoring.js';
 
-export const defaultAdapter: JudgeAdapter = process.env.JUDGE0_API_KEY
-  ? new Judge0Adapter()
-  : new FakeJudgeAdapter();
+function createDefaultAdapter(): JudgeAdapter {
+  if (process.env.JUDGE0_API_KEY || process.env.JUDGE0_URL) {
+    return new Judge0Adapter();
+  }
 
-export function createJudging(submissionId: number, database: Database.Database = defaultDb): number {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('CRITICAL: Production environment requires a real judge engine. Set JUDGE0_API_KEY or JUDGE0_URL.');
+  }
+
+  console.warn('⚠️  [SECURITY WARNING] Running with FakeJudgeAdapter. Submissions will NOT be tested against real inputs. Set JUDGE0_API_KEY for real judging.');
+  return new FakeJudgeAdapter();
+}
+
+export const defaultAdapter: JudgeAdapter = createDefaultAdapter();
+
+export function createJudging(
+  submissionId: number,
+  database: Database.Database = defaultDb,
+  adapter: JudgeAdapter = defaultAdapter
+): number {
   const last = database.prepare('SELECT COALESCE(MAX(attempt),0) AS a FROM judgings WHERE submission_id = ?').get(submissionId) as any;
   const now = new Date().toISOString();
   const info = database.prepare('INSERT INTO judgings (submission_id, attempt, status, engine_name, engine_version, created_at) VALUES (?,?,?,?,?,?)')
-    .run(submissionId, last.a + 1, 'QUEUED', 'fake', '1.0', now);
+    .run(submissionId, last.a + 1, 'QUEUED', adapter.name, adapter.version, now);
   const judgingId = Number(info.lastInsertRowid);
   enqueueJob(judgingId, now, database);
   return judgingId;
@@ -29,46 +45,153 @@ export async function runJudging(
 
   const submission = database.prepare('SELECT * FROM submissions WHERE id = ?').get(judging.submission_id) as any;
   const version = database.prepare('SELECT * FROM problem_versions WHERE id = ?').get(submission.problem_version_id) as any;
+  const problem = database.prepare('SELECT slug FROM problems WHERE id = ?').get(version.problem_id) as any;
+
+  // Extract test cases and subtask definitions from test package manifest
+  const pkg = database.prepare('SELECT manifest FROM test_packages WHERE problem_version_id = ?').get(version.id) as any;
+  const manifest = pkg?.manifest ? JSON.parse(pkg.manifest) : null;
+
+  const testCases: TestCaseData[] = [];
+  const subtaskSpecs: Array<{ name: string; score: number; mode: SubtaskMode; dependsOn?: string[]; testsCount: number }> = [];
+
+  if (manifest?.subtasks && Array.isArray(manifest.subtasks)) {
+    for (const st of manifest.subtasks) {
+      const mode: SubtaskMode = (st.mode === 'min' || st.mode === 'sum') ? st.mode : 'all';
+      subtaskSpecs.push({
+        name: st.name,
+        score: st.score,
+        mode,
+        dependsOn: st.dependsOn,
+        testsCount: st.tests?.length || st.testCount || 1,
+      });
+
+      if (Array.isArray(st.tests)) {
+        for (const t of st.tests) {
+          testCases.push({
+            group: st.name,
+            index: t.index,
+            input: t.input,
+            expectedOutput: t.expectedOutput,
+          });
+        }
+      }
+    }
+  }
 
   const now = new Date().toISOString();
-  database.prepare('UPDATE judgings SET status = ?, started_at = ? WHERE id = ?').run('COMPILING', now, judgingId);
+  const engineName = adapter.name || 'default';
+  const engineVersion = adapter.version || '1.0';
+  database.prepare('UPDATE judgings SET status = ?, started_at = ?, engine_name = ?, engine_version = ? WHERE id = ?')
+    .run('COMPILING', now, engineName, engineVersion, judgingId);
 
   const { engineJobId } = await adapter.submit({
     judgingId: String(judgingId),
-    problemSlug: '',
+    problemSlug: problem?.slug || '',
     language: submission.language,
     sourceCode: submission.source_code,
     timeLimitMs: version.time_limit_ms,
     memoryLimitMb: version.memory_limit_mb,
+    testCases: testCases.length > 0 ? testCases : undefined,
   });
 
   database.prepare('UPDATE judgings SET status = ? WHERE id = ?').run('RUNNING', judgingId);
 
   let status = await adapter.getStatus(engineJobId);
   let tries = 0;
-  while (status.status !== 'DONE' && status.status !== 'JUDGE_ERROR' && tries < 60) {
-    await new Promise(r => setTimeout(r, 100));
+  while (status.status !== 'DONE' && status.status !== 'JUDGE_ERROR' && tries < 30) {
+    await new Promise(r => setTimeout(r, 50));
     status = await adapter.getStatus(engineJobId);
     tries++;
   }
 
-  if (status.status === 'JUDGE_ERROR') {
-    database.transaction(() => {
-      database.prepare("UPDATE judgings SET status = 'JUDGE_ERROR', verdict = 'JUDGE_ERROR', error_message = ? WHERE id = ?")
-        .run('Engine returned JUDGE_ERROR', judgingId);
-      database.prepare("UPDATE submissions SET status = 'JUDGE_ERROR' WHERE id = ?").run(submission.id);
-    })();
-    return;
+  // Handle timeout or failure explicitly - DO NOT assume AC or read unready result!
+  if (status.status !== 'DONE') {
+    if (status.status === 'JUDGE_ERROR') {
+      database.transaction(() => {
+        database.prepare("UPDATE judgings SET status = 'JUDGE_ERROR', verdict = 'JUDGE_ERROR', error_message = ? WHERE id = ?")
+          .run('Engine returned JUDGE_ERROR', judgingId);
+        database.prepare("UPDATE submissions SET status = 'JUDGE_ERROR' WHERE id = ?").run(submission.id);
+      })();
+      return;
+    }
+    // Still in RUNNING/QUEUED state: Engine timed out or hung!
+    throw new Error(`Judge engine timeout: execution did not complete within timeout (status: ${status.status})`);
   }
 
   const result = await adapter.getResult(engineJobId);
 
   // Validate schema and value ranges
-  if (result.score < 0 || result.maxScore < 0) {
-    throw new Error(`Invalid score range: score=${result.score}, maxScore=${result.maxScore}`);
-  }
   if ((result.runtimeMs !== null && result.runtimeMs < 0) || (result.memoryKb !== null && result.memoryKb < 0)) {
     throw new Error('Invalid runtime or memory range');
+  }
+
+  // ====================================================================
+  // SERVER-SIDE SCORING: Compute total score and overall verdict via scoring.ts
+  // The adapter's self-reported score is NEVER blindly trusted.
+  // ====================================================================
+  const evaluatedGroups: GroupOutcome[] = [];
+
+  if (subtaskSpecs.length > 0) {
+    for (const spec of subtaskSpecs) {
+      const adapterGroup = result.groups.find(g => g.group === spec.name) || result.groups[0];
+      const groupTests = adapterGroup ? adapterGroup.tests : [];
+      const testMaxScore = spec.testsCount > 0 ? spec.score / spec.testsCount : spec.score;
+
+      evaluatedGroups.push({
+        name: spec.name,
+        mode: spec.mode,
+        maxScore: spec.score,
+        dependsOn: spec.dependsOn,
+        tests: groupTests.map(t => ({
+          index: t.index,
+          verdict: t.verdict,
+          score: t.verdict === 'AC' ? testMaxScore : 0,
+          maxScore: testMaxScore,
+          runtimeMs: t.runtimeMs,
+          memoryKb: t.memoryKb,
+        })),
+      });
+    }
+  } else {
+    // Default group fallback if no subtasks defined
+    evaluatedGroups.push(...result.groups.map(g => ({
+      name: g.group,
+      mode: 'all' as SubtaskMode,
+      maxScore: g.maxScore,
+      tests: g.tests.map(t => ({
+        index: t.index,
+        verdict: t.verdict,
+        score: t.verdict === 'AC' ? (g.maxScore / Math.max(1, g.tests.length)) : 0,
+        maxScore: g.maxScore / Math.max(1, g.tests.length),
+        runtimeMs: t.runtimeMs,
+        memoryKb: t.memoryKb,
+      })),
+    })));
+  }
+
+  const scoreResult = evaluateSubmissionScore(evaluatedGroups);
+  const totalScore = scoreResult.totalScore;
+  const maxScore = scoreResult.maxScore > 0 ? scoreResult.maxScore : 100;
+
+  // Determine overall verdict
+  let overallVerdict: JudgeVerdict = 'AC';
+  const allTests = result.groups.flatMap(g => g.tests);
+  const hasCe = allTests.some(t => t.verdict === 'CE');
+  const hasJudgeErr = allTests.some(t => t.verdict === 'JUDGE_ERROR');
+  const allAc = allTests.length > 0 && allTests.every(t => t.verdict === 'AC');
+
+  if (hasCe) {
+    overallVerdict = 'CE';
+  } else if (hasJudgeErr) {
+    overallVerdict = 'JUDGE_ERROR';
+  } else if (allAc) {
+    overallVerdict = 'AC';
+  } else if (totalScore > 0 && totalScore < maxScore) {
+    overallVerdict = 'PARTIAL';
+  } else {
+    // Pick first failing test verdict
+    const firstFail = allTests.find(t => t.verdict !== 'AC');
+    overallVerdict = firstFail ? firstFail.verdict : 'WA';
   }
 
   // Atomic write back to database
@@ -84,7 +207,7 @@ export async function runJudging(
 
     database.prepare(
       'UPDATE judgings SET status = ?, verdict = ?, score = ?, max_score = ?, runtime_ms = ?, memory_kb = ?, error_message = ? WHERE id = ?'
-    ).run('DONE', result.verdict, result.score, result.maxScore, result.runtimeMs, result.memoryKb, result.compileMessage ?? null, judgingId);
+    ).run('DONE', overallVerdict, totalScore, maxScore, result.runtimeMs, result.memoryKb, result.compileMessage ?? null, judgingId);
 
     database.prepare('UPDATE submissions SET status = ? WHERE id = ?').run('DONE', submission.id);
   })();
@@ -125,6 +248,9 @@ export function reconcileStaleJudgings(
   maxAttempts: number = 3,
   database: Database.Database = defaultDb
 ): number {
+  // Reclaim stuck claimed jobs first
+  reclaimStaleJobs(timeoutMs, database);
+
   const cutoff = new Date(Date.now() - timeoutMs).toISOString();
   // Find judgings stuck in COMPILING or RUNNING
   const stale = database.prepare(

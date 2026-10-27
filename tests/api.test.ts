@@ -4,6 +4,7 @@ import { Server } from 'node:http';
 import { initDb, seedDb } from '../src/server/db.js';
 import { createApp } from '../src/server/index.js';
 import { MockAdapter } from '../src/server/judge/mockAdapter.js';
+import { signAuthToken } from '../src/server/auth.js';
 
 describe('Task 5 - Core API', () => {
   let testDb: Database.Database;
@@ -11,6 +12,8 @@ describe('Task 5 - Core API', () => {
   let baseUrl: string;
   let studentId: number;
   let adminId: number;
+  let studentToken: string;
+  let adminToken: string;
 
   beforeEach(async () => {
     testDb = new Database(':memory:');
@@ -20,6 +23,9 @@ describe('Task 5 - Core API', () => {
 
     studentId = (testDb.prepare("SELECT id FROM users WHERE role = 'student'").get() as any).id;
     adminId = (testDb.prepare("SELECT id FROM users WHERE role = 'admin'").get() as any).id;
+
+    studentToken = signAuthToken({ id: studentId, email: 'student@local', role: 'student' });
+    adminToken = signAuthToken({ id: adminId, email: 'admin@local', role: 'admin' });
 
     const mockAdapter = new MockAdapter('success');
     const app = createApp(testDb, mockAdapter);
@@ -54,6 +60,23 @@ describe('Task 5 - Core API', () => {
     expect(detail.tests).toBeUndefined();
   });
 
+  it('rejects spoofed X-User-Id header and requires valid signed Bearer token', async () => {
+    const payload = {
+      problemSlug: 'a-plus-b',
+      language: 'C++17',
+      sourceCode: '#include <iostream>\nint main(){ return 0; }',
+      idempotencyKey: 'spoof-test-1',
+    };
+
+    // Attempting to spoof admin or student identity via X-User-Id MUST fail
+    const spoofReq = await fetch(`${baseUrl}/api/submissions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-User-Id': '1' },
+      body: JSON.stringify(payload),
+    });
+    expect(spoofReq.status).toBe(401);
+  });
+
   it('POST /api/submissions handles validation and idempotency', async () => {
     const payload = {
       problemSlug: 'a-plus-b',
@@ -62,7 +85,7 @@ describe('Task 5 - Core API', () => {
       idempotencyKey: 'api-idem-1',
     };
 
-    // Unauthorized without X-User-Id
+    // Unauthorized without token
     const unauth = await fetch(`${baseUrl}/api/submissions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -73,7 +96,10 @@ describe('Task 5 - Core API', () => {
     // Authorized submission
     const res1 = await fetch(`${baseUrl}/api/submissions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-User-Id': String(studentId) },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${studentToken}`,
+      },
       body: JSON.stringify(payload),
     });
     expect(res1.status).toBe(201);
@@ -83,7 +109,10 @@ describe('Task 5 - Core API', () => {
     // Idempotent re-submission returns same ID
     const res2 = await fetch(`${baseUrl}/api/submissions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-User-Id': String(studentId) },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${studentToken}`,
+      },
       body: JSON.stringify(payload),
     });
     expect(res2.status).toBe(200);
@@ -103,7 +132,10 @@ describe('Task 5 - Core API', () => {
     for (let i = 1; i <= 10; i++) {
       const res = await fetch(`${baseUrl}/api/submissions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-User-Id': String(studentId) },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${studentToken}`,
+        },
         body: JSON.stringify({ ...basePayload, idempotencyKey: `rate-key-${i}` }),
       });
       expect(res.status).toBe(201);
@@ -114,7 +146,10 @@ describe('Task 5 - Core API', () => {
     // 11th submission in the same minute must be rate limited
     const rateLimited = await fetch(`${baseUrl}/api/submissions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-User-Id': String(studentId) },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${studentToken}`,
+      },
       body: JSON.stringify({ ...basePayload, idempotencyKey: 'rate-key-11' }),
     });
 
@@ -124,10 +159,13 @@ describe('Task 5 - Core API', () => {
     expect(body.error).toContain('Rate limit exceeded');
   });
 
-  it('GET /api/submissions/:id does NOT leak hidden test inputs or expected outputs', async () => {
+  it('GET /api/submissions/:id enforces ownership authorization and does NOT leak hidden test cases', async () => {
     const res = await fetch(`${baseUrl}/api/submissions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-User-Id': String(studentId) },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${studentToken}`,
+      },
       body: JSON.stringify({
         problemSlug: 'a-plus-b',
         language: 'C++17',
@@ -137,14 +175,30 @@ describe('Task 5 - Core API', () => {
     });
     const { id } = await res.json();
 
-    const detailRes = await fetch(`${baseUrl}/api/submissions/${id}`);
+    // 1. Unauthenticated request rejected
+    const unauth = await fetch(`${baseUrl}/api/submissions/${id}`);
+    expect(unauth.status).toBe(401);
+
+    // 2. Different user (another student in database) attempting to scrape is rejected with 403 Forbidden
+    testDb.prepare("INSERT INTO users (email, name, role) VALUES ('other@local', 'Other Student', 'student')").run();
+    const otherUser = testDb.prepare("SELECT id FROM users WHERE email = 'other@local'").get() as any;
+    const otherStudentToken = signAuthToken({ id: otherUser.id, email: 'other@local', role: 'student' });
+    const forbidden = await fetch(`${baseUrl}/api/submissions/${id}`, {
+      headers: { Authorization: `Bearer ${otherStudentToken}` },
+    });
+    expect(forbidden.status).toBe(403);
+
+    // 3. Owner student can view their own submission
+    const detailRes = await fetch(`${baseUrl}/api/submissions/${id}`, {
+      headers: { Authorization: `Bearer ${studentToken}` },
+    });
     expect(detailRes.status).toBe(200);
     const detail = await detailRes.json();
 
     expect(detail.submission).toHaveProperty('id');
     expect(detail.submission).toHaveProperty('status');
     expect(detail).toHaveProperty('groups');
-    // Ensure hidden input/output/expected fields are not present
+    // Ensure hidden input/output/expected fields are not leaked
     expect(detail).not.toHaveProperty('expectedOutput');
     expect(detail).not.toHaveProperty('input');
     expect(detail).not.toHaveProperty('hiddenTests');
@@ -154,7 +208,10 @@ describe('Task 5 - Core API', () => {
     // Non-admin cannot create problem
     const forbidden = await fetch(`${baseUrl}/api/admin/problems`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-User-Id': String(studentId) },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${studentToken}`,
+      },
       body: JSON.stringify({ slug: 'new-problem', title: 'New', statementMd: '# Statement' }),
     });
     expect(forbidden.status).toBe(403);
@@ -162,7 +219,10 @@ describe('Task 5 - Core API', () => {
     // Admin creates problem
     const adminCreate = await fetch(`${baseUrl}/api/admin/problems`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-User-Id': String(adminId) },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`,
+      },
       body: JSON.stringify({
         slug: 'new-problem',
         title: 'New Problem',
@@ -177,7 +237,10 @@ describe('Task 5 - Core API', () => {
     // Admin uploads test package
     const uploadPkg = await fetch(`${baseUrl}/api/admin/problems/${problemId}/test-package`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-User-Id': String(adminId) },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`,
+      },
       body: JSON.stringify({
         manifest: { version: '1.0', testCount: 10 },
         checksum: 'sha256-abcdef1234567890',
@@ -187,7 +250,7 @@ describe('Task 5 - Core API', () => {
 
     // Admin checks judge health
     const health = await fetch(`${baseUrl}/api/admin/judge-health`, {
-      headers: { 'X-User-Id': String(adminId) },
+      headers: { Authorization: `Bearer ${adminToken}` },
     });
     expect(health.status).toBe(200);
     const healthData = await health.json();

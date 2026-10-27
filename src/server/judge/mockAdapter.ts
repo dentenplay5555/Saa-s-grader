@@ -3,6 +3,8 @@ import { JudgeAdapter, JudgeProgress, JudgeResult, JudgeSubmission } from './ada
 export type MockMode = 'success' | 'fail' | 'hang';
 
 export class MockAdapter implements JudgeAdapter {
+  readonly name = 'mock';
+  readonly version = '1.0';
   constructor(private mode: MockMode = 'success') {}
   private jobs = new Map<string, { status: JudgeProgress['status']; result: JudgeResult }>();
 

@@ -49,3 +49,14 @@ export function failJob(
     .run(nextAttempts, runAfter, jobId);
   return 'RETRY';
 }
+
+/**
+ * Reclaims jobs that remained in CLAIMED state beyond stale threshold (e.g. worker process crashed).
+ */
+export function reclaimStaleJobs(staleAfterMs: number = 60000, database: Database.Database = defaultDb): number {
+  const cutoff = new Date(Date.now() - staleAfterMs).toISOString();
+  const info = database.prepare(
+    "UPDATE jobs SET state = 'QUEUED', locked_by = NULL, locked_at = NULL WHERE state = 'CLAIMED' AND locked_at <= ?"
+  ).run(cutoff);
+  return info.changes;
+}
