@@ -31,6 +31,11 @@ describe('Task 1 - Schema & Constraints', () => {
       'test_results',
       'jobs',
       'audit_logs',
+      'tracks',
+      'lessons',
+      'track_lessons',
+      'lesson_problems',
+      'lesson_progress',
     ];
 
     for (const t of expectedTables) {
@@ -44,10 +49,6 @@ describe('Task 1 - Schema & Constraints', () => {
       'contests',
       'contest_problems',
       'contest_submissions',
-      'lessons',
-      'tracks',
-      'track_items',
-      'lesson_progress',
       'user_settings',
     ];
 

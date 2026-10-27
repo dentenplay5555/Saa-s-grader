@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TOI Grader — DSA Academy</title>
+  <title>DSA Academy — TOI & Competitive Programming Learning Platform</title>
+  <link rel="manifest" href="/manifest.webmanifest">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Prompt:wght@300;400;500;600&display=swap" rel="stylesheet">
@@ -11,6 +12,7 @@
     :root {
       --bg: #0d1117;
       --card-bg: #161b22;
+      --card-hover: #1f242c;
       --border: #30363d;
       --text: #e6edf3;
       --text-muted: #8b949e;
@@ -21,6 +23,7 @@
       --warning: #d29922;
       --success: #3fb950;
       --info: #58a6ff;
+      --accent: #a371f7;
     }
 
     * { box-sizing: border-box; }
@@ -30,7 +33,18 @@
       color: var(--text);
       margin: 0;
       padding: 0;
-      line-height: 1.5;
+      line-height: 1.6;
+    }
+
+    /* Offline Banner */
+    #offline-indicator {
+      display: none;
+      background: #9e6a03;
+      color: #fff;
+      text-align: center;
+      padding: 0.35rem;
+      font-size: 0.85rem;
+      font-weight: 500;
     }
 
     header {
@@ -40,6 +54,9 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
     }
 
     .brand {
@@ -53,14 +70,23 @@
     }
     .brand span { color: var(--success); }
 
+    nav {
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+    }
     nav a {
       color: var(--text-muted);
       text-decoration: none;
-      margin-left: 1rem;
-      font-size: 0.95rem;
-      transition: color 0.15s;
+      padding: 0.35rem 0.65rem;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      transition: all 0.15s;
     }
-    nav a:hover, nav a.active { color: #fff; }
+    nav a:hover, nav a.active {
+      color: #fff;
+      background: rgba(255,255,255,0.05);
+    }
 
     main {
       max-width: 1200px;
@@ -76,14 +102,73 @@
       margin-bottom: 1.5rem;
     }
 
+    /* Dual Mode Layout: Split View */
+    .editor-container-wrapper {
+      position: relative;
+      height: calc(100vh - 120px);
+    }
+
     .split-layout {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 1.25rem;
-      height: calc(100vh - 120px);
+      gap: 1rem;
+      height: 100%;
     }
     @media (max-width: 900px) {
       .split-layout { grid-template-columns: 1fr; height: auto; }
+    }
+
+    /* Dual Mode Layout: Focus Mode (Task 17) */
+    .focus-mode-active {
+      position: fixed;
+      inset: 0;
+      z-index: 999;
+      background: #090d13;
+      display: flex;
+      flex-direction: column;
+      margin: 0 !important;
+      max-width: none !important;
+      padding: 0 !important;
+      height: 100vh !important;
+    }
+    .focus-mode-active .panel-statement {
+      display: none;
+    }
+    .focus-mode-active .panel-editor {
+      flex: 1;
+      height: 100%;
+      border-radius: 0;
+      border: none;
+    }
+
+    /* Problem Statement Slide-over Drawer for Focus Mode */
+    .problem-drawer {
+      position: fixed;
+      top: 0;
+      left: -480px;
+      width: 480px;
+      max-width: 85vw;
+      height: 100vh;
+      background: var(--card-bg);
+      border-right: 1px solid var(--border);
+      z-index: 1001;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 4px 0 24px rgba(0,0,0,0.6);
+      transition: left 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .problem-drawer.open {
+      left: 0;
+    }
+    .drawer-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 1000;
+    }
+    .drawer-backdrop.open {
+      display: block;
     }
 
     .panel {
@@ -146,20 +231,26 @@
     button.btn-primary:hover { background: var(--primary-hover); }
     button.btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
 
-    button.btn-danger {
-      background: var(--danger);
-      color: #fff;
-      border: none;
-      padding: 0.5rem 1.25rem;
+    button.btn-secondary {
+      background: #21262d;
+      color: #c9d1d9;
+      border: 1px solid var(--border);
+      padding: 0.4rem 0.9rem;
       border-radius: 6px;
+      font-family: inherit;
       cursor: pointer;
+      transition: all 0.15s;
+    }
+    button.btn-secondary:hover {
+      background: #30363d;
+      color: #fff;
     }
 
     .badge {
       display: inline-block;
-      padding: 0.25rem 0.6rem;
+      padding: 0.2rem 0.55rem;
       border-radius: 12px;
-      font-size: 0.8rem;
+      font-size: 0.78rem;
       font-weight: 600;
       font-family: 'JetBrains Mono', monospace;
     }
@@ -170,34 +261,95 @@
     .badge-RE, .badge-CE, .badge-JUDGE_ERROR { background: var(--danger-bg); color: #f85149; border: 1px solid #da3633; }
     .badge-QUEUED, .badge-COMPILING, .badge-RUNNING { background: rgba(88, 166, 255, 0.2); color: #58a6ff; border: 1px solid #58a6ff; }
 
-    .subtask-card {
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      margin-bottom: 0.75rem;
-      overflow: hidden;
-    }
-    .subtask-header {
-      padding: 0.6rem 1rem;
-      background: rgba(255,255,255,0.03);
-      display: flex;
-      justify-content: space-between;
-      font-weight: 500;
-    }
-    .test-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-      gap: 0.5rem;
-      padding: 0.75rem;
-      background: rgba(0,0,0,0.2);
-    }
-    .test-chip {
-      padding: 0.4rem 0.6rem;
+    /* Difficulty Badges */
+    .badge-D0 { background: rgba(88, 166, 255, 0.15); color: #58a6ff; border: 1px solid #58a6ff; }
+    .badge-D1 { background: rgba(63, 185, 80, 0.15); color: #3fb950; border: 1px solid #3fb950; }
+    .badge-D2 { background: rgba(46, 160, 67, 0.2); color: #56d364; border: 1px solid #56d364; }
+    .badge-D3 { background: rgba(210, 153, 34, 0.2); color: #e3b341; border: 1px solid #d29922; }
+    .badge-D4 { background: rgba(219, 109, 40, 0.2); color: #f0883e; border: 1px solid #db6d28; }
+    .badge-D5 { background: rgba(218, 54, 51, 0.2); color: #f85149; border: 1px solid #da3633; }
+    .badge-D6 { background: rgba(163, 113, 247, 0.2); color: #bc8cff; border: 1px solid #a371f7; }
+
+    /* Stage Badges */
+    .stage-tag {
+      display: inline-block;
+      font-size: 0.75rem;
+      padding: 0.15rem 0.5rem;
       border-radius: 4px;
+      background: rgba(255,255,255,0.06);
+      color: var(--text-muted);
+    }
+
+    /* Tabs */
+    .tab-bar {
+      display: flex;
+      gap: 0.5rem;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 1.25rem;
+      overflow-x: auto;
+    }
+    .tab-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      padding: 0.6rem 1rem;
+      font-family: inherit;
+      font-size: 0.9rem;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      white-space: nowrap;
+      transition: all 0.15s;
+    }
+    .tab-btn:hover { color: #fff; }
+    .tab-btn.active {
+      color: #fff;
+      font-weight: 500;
+      border-bottom-color: var(--info);
+    }
+
+    /* Grid & Cards */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1.25rem;
+    }
+    .track-card {
       background: var(--card-bg);
       border: 1px solid var(--border);
-      font-size: 0.8rem;
+      border-radius: 8px;
+      padding: 1.5rem;
+      transition: all 0.15s;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .track-card:hover {
+      border-color: var(--info);
+      background: var(--card-hover);
+    }
+
+    .lesson-item {
       display: flex;
       justify-content: space-between;
+      align-items: center;
+      padding: 0.9rem 1rem;
+      border-bottom: 1px solid var(--border);
+      transition: background 0.1s;
+    }
+    .lesson-item:hover { background: rgba(255,255,255,0.02); }
+    .lesson-item:last-child { border-bottom: none; }
+
+    pre code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.9rem;
+    }
+    .code-box {
+      background: #090d13;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1rem;
+      overflow-x: auto;
+      margin: 1rem 0;
     }
 
     .alert-box {
@@ -210,6 +362,11 @@
       background: var(--danger-bg);
       border-color: var(--danger);
       color: #ff7b72;
+    }
+    .alert-hint {
+      background: rgba(88, 166, 255, 0.1);
+      border-color: rgba(88, 166, 255, 0.3);
+      color: #79c0ff;
     }
 
     table.data-table {
@@ -227,16 +384,20 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
 </head>
 <body>
+  <div id="offline-indicator">⚠️ คุณกำลังใช้งานโหมดออฟไลน์ (Level 1 Offline) — สามารถอ่านโจทย์และเขียนโค้ดได้ โค้ดที่ส่งจะถูกพักไว้ใน Outbox และส่งตรวจอัตโนมัติเมื่อต่ออินเทอร์เน็ต</div>
   <header>
-    <a href="#/" class="brand">DSA Academy <span>TOI Grader</span></a>
+    <a href="#/" class="brand">DSA Academy <span>Curriculum & Grader</span></a>
     <nav>
-      <a href="#/">รายการโจทย์</a>
-      <a href="#/me">ประวัติการส่ง</a>
-      <a href="#/admin">ระบบผู้ดูแล (Admin)</a>
+      <a href="#/tracks" id="nav-tracks">🗺️ แผนการเรียน (Tracks)</a>
+      <a href="#/lessons" id="nav-lessons">📚 บทเรียนทั้งหมด</a>
+      <a href="#/problems" id="nav-problems">💻 คลังโจทย์</a>
+      <a href="#/dashboard" id="nav-dashboard">📊 Dashboard</a>
+      <a href="#/me" id="nav-me">⏱️ ประวัติการส่ง</a>
+      <a href="#/admin" id="nav-admin">⚙️ ผู้ดูแล</a>
     </nav>
   </header>
   <main id="app">
-    <div style="text-align:center; padding: 2rem; color: var(--text-muted);">กำลังโหลดระบบ...</div>
+    <div style="text-align:center; padding: 2rem; color: var(--text-muted);">กำลังโหลดระบบการเรียนรู้...</div>
   </main>
   <script type="module" src="/main.ts"></script>
 </body>
