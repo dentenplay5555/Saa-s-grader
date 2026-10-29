@@ -1,7 +1,29 @@
 import crypto from 'node:crypto';
 import Database from 'better-sqlite3';
 
-const AUTH_SECRET = process.env.AUTH_SECRET || 'dsa-academy-production-grade-secure-auth-secret-key-32b!';
+let cachedSecret: string | null = null;
+
+/**
+ * AUTH_SECRET is mandatory (>= 32 chars). There is NO built-in fallback: a secret that lives in the
+ * repository is a secret everyone has, and would let anyone forge an admin token.
+ *  - NODE_ENV=test: fixed test-only secret (tests sign their own tokens).
+ *  - NODE_ENV=development: random per-process secret (tokens die on restart) so `npm run dev` just works.
+ *  - anything else: must be provided, otherwise we refuse to run.
+ */
+export function getAuthSecret(): string {
+  if (cachedSecret) return cachedSecret;
+  const env = process.env.AUTH_SECRET;
+  if (env) {
+    if (env.length < 32) throw new Error('AUTH_SECRET must be at least 32 characters (try: openssl rand -hex 32)');
+    return (cachedSecret = env);
+  }
+  if (process.env.NODE_ENV === 'test') return (cachedSecret = 'test-only-secret-do-not-use-outside-vitest-0123456789');
+  if (process.env.NODE_ENV === 'development') {
+    console.warn('[auth] AUTH_SECRET not set: using a random per-process secret (dev only; sessions reset on restart).');
+    return (cachedSecret = crypto.randomBytes(32).toString('hex'));
+  }
+  throw new Error('AUTH_SECRET is required. Generate one with: openssl rand -hex 32');
+}
 
 export interface AuthUser {
   id: number;
@@ -28,7 +50,7 @@ export function signAuthToken(
   ).toString('base64url');
 
   const data = `${header}.${payload}`;
-  const sig = crypto.createHmac('sha256', AUTH_SECRET).update(data).digest('base64url');
+  const sig = crypto.createHmac('sha256', getAuthSecret()).update(data).digest('base64url');
   return `${data}.${sig}`;
 }
 
@@ -42,7 +64,7 @@ export function verifyAuthToken(token: string): { id: number; email: string; rol
     if (parts.length !== 3) return null;
 
     const [header, payload, sig] = parts;
-    const expectedSig = crypto.createHmac('sha256', AUTH_SECRET).update(`${header}.${payload}`).digest('base64url');
+    const expectedSig = crypto.createHmac('sha256', getAuthSecret()).update(`${header}.${payload}`).digest('base64url');
 
     const sigBuf = Buffer.from(sig);
     const expectedBuf = Buffer.from(expectedSig);

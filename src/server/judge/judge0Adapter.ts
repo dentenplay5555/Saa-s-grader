@@ -41,9 +41,10 @@ export class Judge0Adapter implements JudgeAdapter {
    */
   async submit(input: JudgeSubmission & { judgingId: string }): Promise<{ engineJobId: string }> {
     const langId = LANG[input.language] ?? 54;
-    const testCases: TestCaseData[] = (input.testCases && input.testCases.length > 0)
-      ? input.testCases
-      : [{ group: 'default', index: 1, input: '', expectedOutput: '' }];
+    if (!input.testCases || input.testCases.length === 0) {
+      throw new Error('Judge0Adapter.submit called without test cases (refusing to judge against empty input)');
+    }
+    const testCases: TestCaseData[] = input.testCases;
 
     const engineJobId = `j0-${input.judgingId}-${Date.now()}`;
     const submittingTokens: StoredJob['submittingTokens'] = [];

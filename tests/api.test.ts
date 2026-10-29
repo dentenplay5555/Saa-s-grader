@@ -242,7 +242,7 @@ describe('Task 5 - Core API', () => {
         Authorization: `Bearer ${adminToken}`,
       },
       body: JSON.stringify({
-        manifest: { version: '1.0', testCount: 10 },
+        manifest: { version: '1.0', subtasks: [{ name: 's1', score: 100, tests: [{ index: 1, input: '1 2\n', expectedOutput: '3\n' }] }] },
         checksum: 'sha256-abcdef1234567890',
       }),
     });
