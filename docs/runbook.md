@@ -82,3 +82,18 @@
    - สำหรับนักเรียนทั่วไป เก็บซอร์สโค้ดไว้เป็นเวลา 1 ปีการศึกษาเพื่อการเรียนรู้ย้อนหลัง หลังจากนั้นระบบจะ purge หรือ anonymize ตามสิทธิของเจ้าของข้อมูล (Right to Erasure)
 3. **ช่องทางลบข้อมูล:**
    - นักเรียนสามารถร้องขอการลบประวัติการส่งและบัญชีผู้ใช้ได้ผ่านการติดต่อผู้ดูแลระบบ
+
+## Auth & judge engine configuration (required env)
+
+| Variable | Required | Notes |
+|---|---|---|
+| `AUTH_SECRET` | yes (all envs except `NODE_ENV=test`/`development`) | ≥32 chars, `openssl rand -hex 32`. No default; server refuses to boot without it. |
+| `JUDGE0_API_KEY` or `JUDGE0_URL` | yes in production | Real judge engine. |
+| `JUDGE_ENGINE=fake` | dev only | Marks everything AC. Refused when `NODE_ENV=production`. `npm run dev:api` sets it. |
+| `SEED_ADMIN_PASSWORD`, `SEED_STUDENT_PASSWORD` | optional | Used when seeding an empty DB. If unset: random password printed once (dev) or no password (production). |
+
+Set / reset a password: `npm run set-password -- user@example.com [password]` (random one is printed if omitted).
+
+Login: `POST /api/auth/login {email, password}`; 5 failures / 15 min per (ip, email) → 429.
+Problems with no valid test package: submit → 409; existing queued jobs → `JUDGE_ERROR` (never AC).
+Test package manifest must be `{ subtasks: [{ name, score, mode?, dependsOn?, tests: [{index, input, expectedOutput}] }] }`.

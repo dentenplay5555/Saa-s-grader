@@ -1,6 +1,8 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { hashPasswordSync } from './password.js';
 import { VERTICAL_SLICE_LESSONS } from './curriculum/curriculumData.js';
 
 export const SCHEMA_SQL_PATH = path.join(process.cwd(), 'schema.sql');
@@ -10,6 +12,11 @@ const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), 'data.db');
 export function initDb(targetDb: Database.Database = db) {
   const schema = fs.readFileSync(SCHEMA_SQL_PATH, 'utf8');
   targetDb.exec(schema);
+  // Migration for databases created before password_hash existed
+  const cols = targetDb.prepare("PRAGMA table_info('users')").all() as Array<{ name: string }>;
+  if (!cols.some(c => c.name === 'password_hash')) {
+    targetDb.exec('ALTER TABLE users ADD COLUMN password_hash TEXT');
+  }
 }
 
 export function initAppendixDb(targetDb: Database.Database = db) {
@@ -23,8 +30,24 @@ export function seedDb(targetDb: Database.Database = db) {
   const userCount = targetDb.prepare('SELECT COUNT(*) AS c FROM users').get() as any;
   if (userCount.c === 0) {
     // 1. Users
-    targetDb.prepare("INSERT INTO users (email, name, role) VALUES (?,?,?)").run('admin@local', 'Admin', 'admin');
-    targetDb.prepare("INSERT INTO users (email, name, role) VALUES (?,?,?)").run('student@local', 'Student', 'student');
+    // Passwords come from SEED_ADMIN_PASSWORD / SEED_STUDENT_PASSWORD. If unset: a random one is generated and
+    // printed once (non-production), or the account is left without a password (production) until
+    // `npm run set-password -- <email>` is run. Seeded accounts are never passwordless-loginable.
+    const isProd = process.env.NODE_ENV === 'production';
+    const isTest = process.env.NODE_ENV === 'test';
+    for (const [email, name, role, envKey] of [
+      ['admin@local', 'Admin', 'admin', 'SEED_ADMIN_PASSWORD'],
+      ['student@local', 'Student', 'student', 'SEED_STUDENT_PASSWORD'],
+    ] as const) {
+      let hash: string | null = null;
+      let pw = process.env[envKey];
+      if (!pw && !isProd && !isTest) {
+        pw = crypto.randomBytes(9).toString('base64url');
+        console.warn(`[seed] ${email} password (shown once): ${pw}`);
+      }
+      if (pw) hash = hashPasswordSync(pw);
+      targetDb.prepare('INSERT INTO users (email, name, role, password_hash) VALUES (?,?,?,?)').run(email, name, role, hash);
+    }
 
     // 2. Languages
     targetDb.prepare("INSERT INTO languages (name, compiler_version, flags, enabled) VALUES (?,?,?,1)").run('C++17', 'g++ 16.2', '-O2 -std=c++17');

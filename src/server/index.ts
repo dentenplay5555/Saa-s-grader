@@ -6,7 +6,9 @@ import { db as defaultDb } from './db.js';
 import { createJudging, defaultAdapter, processNextJob, reconcileStaleJudgings } from './judge/coordinator.js';
 import { PlagiarismEngine } from './plagiarism/plagiarismEngine.js';
 import { CodeAnalyzer } from './analysis/codeAnalyzer.js';
-import { AuthUser, signAuthToken, userFromRequest } from './auth.js';
+import { AuthUser, getAuthSecret, signAuthToken, userFromRequest } from './auth.js';
+import { getDummyHash, verifyPassword } from './password.js';
+import { buildTestPlan, latestManifest, TestPlanError } from './judge/testPlan.js';
 
 export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
   const app = express();
@@ -31,27 +33,50 @@ export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
 
   // --- Authentication Endpoints ---
 
-  app.post('/api/auth/login', (req, res) => {
-    const { email, userId } = req.body ?? {};
-    let user: any = null;
+  // --- Login throttle: 5 failures / 15 min per (ip, email), in-memory ---
+  const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+  const LOGIN_MAX_FAILS = 5;
+  const loginFails = new Map<string, { count: number; first: number }>();
+  const cookieFlags = () => `Path=/; HttpOnly; SameSite=Lax${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;
 
-    if (userId) {
-      user = database.prepare('SELECT id, email, name, role FROM users WHERE id = ?').get(userId);
-    } else if (email) {
-      user = database.prepare('SELECT id, email, name, role FROM users WHERE email = ?').get(email);
+  app.post('/api/auth/login', async (req, res) => {
+    const { email, password } = req.body ?? {};
+    if (typeof email !== 'string' || typeof password !== 'string' || !email || !password) {
+      return res.status(400).json({ error: 'email and password are required' });
     }
 
-    if (!user) {
-      return res.status(401).json({ error: 'User not found or invalid credentials' });
+    const key = `${req.ip}|${email.toLowerCase()}`;
+    const now = Date.now();
+    const rec = loginFails.get(key);
+    if (rec && now - rec.first > LOGIN_WINDOW_MS) loginFails.delete(key);
+    const cur = loginFails.get(key);
+    if (cur && cur.count >= LOGIN_MAX_FAILS) {
+      res.setHeader('Retry-After', String(Math.ceil((LOGIN_WINDOW_MS - (now - cur.first)) / 1000)));
+      return res.status(429).json({ error: 'Too many failed login attempts. Try again later.' });
     }
 
+    const row = database
+      .prepare('SELECT id, email, name, role, password_hash FROM users WHERE email = ?')
+      .get(email) as (AuthUser & { password_hash: string | null }) | undefined;
+
+    // Always run one scrypt verification so response time does not reveal whether the email exists.
+    const ok = await verifyPassword(password, row?.password_hash ?? (await getDummyHash()));
+    if (!row || !row.password_hash || !ok) {
+      const f = loginFails.get(key) ?? { count: 0, first: now };
+      f.count++;
+      loginFails.set(key, f);
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    loginFails.delete(key);
+    const user: AuthUser = { id: row.id, email: row.email, name: row.name, role: row.role };
     const token = signAuthToken(user);
-    res.setHeader('Set-Cookie', `session=${token}; Path=/; HttpOnly; SameSite=Lax`);
+    res.setHeader('Set-Cookie', `session=${token}; ${cookieFlags()}; Max-Age=${7 * 86400}`);
     res.json({ ok: true, token, user });
   });
 
   app.post('/api/auth/logout', (_req, res) => {
-    res.setHeader('Set-Cookie', 'session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT');
+    res.setHeader('Set-Cookie', `session=; ${cookieFlags()}; Expires=Thu, 01 Jan 1970 00:00:00 GMT`);
     res.json({ ok: true });
   });
 
@@ -315,6 +340,14 @@ export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
       return res.status(404).json({ error: 'Problem not found' });
     }
 
+    // Fail closed: a problem without a valid test package cannot be judged, so do not accept submissions for it.
+    try {
+      buildTestPlan(latestManifest(database, p.current_version_id));
+    } catch (e) {
+      if (e instanceof TestPlanError) return res.status(409).json({ error: 'This problem has no valid test cases yet and cannot be judged' });
+      throw e;
+    }
+
     // Idempotency: return existing submission if same (user_id, idempotency_key)
     const existing = database.prepare(
       'SELECT id FROM submissions WHERE user_id = ? AND idempotency_key = ?'
@@ -449,9 +482,17 @@ export function createApp(database = defaultDb, judgeAdapter = defaultAdapter) {
       return res.status(400).json({ error: 'manifest and checksum are required' });
     }
 
+    const manifestJson = typeof manifest === 'string' ? manifest : JSON.stringify(manifest);
+    try {
+      buildTestPlan(manifestJson);
+    } catch (e) {
+      if (e instanceof TestPlanError) return res.status(400).json({ error: e.message });
+      throw e;
+    }
+
     const info = database.prepare(
       'INSERT INTO test_packages (problem_version_id, manifest, checksum) VALUES (?,?,?)'
-    ).run(p.current_version_id, typeof manifest === 'string' ? manifest : JSON.stringify(manifest), checksum);
+    ).run(p.current_version_id, manifestJson, checksum);
 
     writeAuditLog(u.id, 'UPLOAD_TEST_PACKAGE', 'test_packages', Number(info.lastInsertRowid), `Checksum: ${checksum}`);
     res.status(201).json({ id: Number(info.lastInsertRowid) });
@@ -731,6 +772,7 @@ export function startWorker(database = defaultDb, judgeAdapter = defaultAdapter,
 export const app = createApp();
 
 if (process.env.NODE_ENV !== 'test') {
+  getAuthSecret(); // fail fast at boot if AUTH_SECRET is missing/weak
   const port = Number(process.env.PORT || 3000);
   app.listen(port, () => {
     console.log(`api listening on port ${port}`);

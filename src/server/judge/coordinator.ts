@@ -4,19 +4,26 @@ import { JudgeAdapter, TestCaseData, JudgeVerdict } from './adapter.js';
 import { FakeJudgeAdapter } from './fakeAdapter.js';
 import { Judge0Adapter } from './judge0Adapter.js';
 import { claimJob, completeJob, failJob, enqueueJob, reclaimStaleJobs } from './jobQueue.js';
+import { buildTestPlan, latestManifest, TestPlanError } from './testPlan.js';
 import { evaluateSubmissionScore, GroupOutcome, SubtaskMode } from '../scoring.js';
 
 function createDefaultAdapter(): JudgeAdapter {
-  if (process.env.JUDGE0_API_KEY || process.env.JUDGE0_URL) {
+  if (process.env.NODE_ENV === 'test') return new FakeJudgeAdapter();
+
+  const wanted = process.env.JUDGE_ENGINE; // 'judge0' | 'fake' | undefined
+  if (wanted !== 'fake' && (process.env.JUDGE0_API_KEY || process.env.JUDGE0_URL)) {
     return new Judge0Adapter();
   }
 
-  if (process.env.NODE_ENV === 'production') {
-    throw new Error('CRITICAL: Production environment requires a real judge engine. Set JUDGE0_API_KEY or JUDGE0_URL.');
+  if (wanted === 'fake') {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('JUDGE_ENGINE=fake is not allowed when NODE_ENV=production.');
+    }
+    console.warn('⚠️  JUDGE_ENGINE=fake: every submission is marked AC without running code. Local UI development only.');
+    return new FakeJudgeAdapter();
   }
 
-  console.warn('⚠️  [SECURITY WARNING] Running with FakeJudgeAdapter. Submissions will NOT be tested against real inputs. Set JUDGE0_API_KEY for real judging.');
-  return new FakeJudgeAdapter();
+  throw new Error('No judge engine configured. Set JUDGE0_API_KEY (or JUDGE0_URL), or JUDGE_ENGINE=fake for local UI development.');
 }
 
 export const defaultAdapter: JudgeAdapter = createDefaultAdapter();
@@ -47,36 +54,20 @@ export async function runJudging(
   const version = database.prepare('SELECT * FROM problem_versions WHERE id = ?').get(submission.problem_version_id) as any;
   const problem = database.prepare('SELECT slug FROM problems WHERE id = ?').get(version.problem_id) as any;
 
-  // Extract test cases and subtask definitions from test package manifest
-  const pkg = database.prepare('SELECT manifest FROM test_packages WHERE problem_version_id = ?').get(version.id) as any;
-  const manifest = pkg?.manifest ? JSON.parse(pkg.manifest) : null;
-
-  const testCases: TestCaseData[] = [];
-  const subtaskSpecs: Array<{ name: string; score: number; mode: SubtaskMode; dependsOn?: string[]; testsCount: number }> = [];
-
-  if (manifest?.subtasks && Array.isArray(manifest.subtasks)) {
-    for (const st of manifest.subtasks) {
-      const mode: SubtaskMode = (st.mode === 'min' || st.mode === 'sum') ? st.mode : 'all';
-      subtaskSpecs.push({
-        name: st.name,
-        score: st.score,
-        mode,
-        dependsOn: st.dependsOn,
-        testsCount: st.tests?.length || st.testCount || 1,
-      });
-
-      if (Array.isArray(st.tests)) {
-        for (const t of st.tests) {
-          testCases.push({
-            group: st.name,
-            index: t.index,
-            input: t.input,
-            expectedOutput: t.expectedOutput,
-          });
-        }
-      }
-    }
+  // Build the test plan. A problem without a valid test package can never be judged: fail closed.
+  let plan;
+  try {
+    plan = buildTestPlan(latestManifest(database, version.id));
+  } catch (err: any) {
+    if (!(err instanceof TestPlanError)) throw err;
+    database.transaction(() => {
+      database.prepare("UPDATE judgings SET status = 'JUDGE_ERROR', verdict = 'JUDGE_ERROR', error_message = ?, started_at = COALESCE(started_at, ?) WHERE id = ?")
+        .run(err.message, new Date().toISOString(), judgingId);
+      database.prepare("UPDATE submissions SET status = 'JUDGE_ERROR' WHERE id = ?").run(submission.id);
+    })();
+    return; // deterministic failure: retrying cannot help
   }
+  const { testCases, subtaskSpecs } = plan;
 
   const now = new Date().toISOString();
   const engineName = adapter.name || 'default';
@@ -91,7 +82,7 @@ export async function runJudging(
     sourceCode: submission.source_code,
     timeLimitMs: version.time_limit_ms,
     memoryLimitMb: version.memory_limit_mb,
-    testCases: testCases.length > 0 ? testCases : undefined,
+    testCases,
   });
 
   database.prepare('UPDATE judgings SET status = ? WHERE id = ?').run('RUNNING', judgingId);

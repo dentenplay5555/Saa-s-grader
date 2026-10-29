@@ -53,29 +53,104 @@ async function api(path: string, opts?: RequestInit) {
   });
   if (!res.ok) {
     const errorBody = await res.json().catch(() => ({ error: res.statusText }));
+    if (res.status === 401 && path !== '/api/auth/login') {
+      clearSession();
+      location.hash = '#/login';
+    }
     throw errorBody;
   }
   return res.json();
 }
 
-async function ensureAuth() {
-  let token = localStorage.getItem('auth_token');
-  if (!token) {
+let currentUser: { id: number; email: string; name: string; role: string } | null = null;
+
+function clearSession() {
+  localStorage.removeItem('auth_token');
+  localStorage.removeItem('auth_user');
+  currentUser = null;
+  renderAuthNav();
+}
+
+/** Asks the server who we are. No auto-login: no valid session means the login page. */
+async function loadSession() {
+  try {
+    const res = await fetch('/api/auth/me', {
+      headers: localStorage.getItem('auth_token') ? { Authorization: `Bearer ${localStorage.getItem('auth_token')}` } : {},
+    });
+    const data = res.ok ? await res.json() : { user: null };
+    currentUser = data.user ?? null;
+  } catch {
+    // Offline: keep the cached user so reading/writing code still works; the server re-checks on sync.
+    try { currentUser = JSON.parse(localStorage.getItem('auth_user') || 'null'); } catch { currentUser = null; }
+  }
+  if (!currentUser) clearSession();
+  renderAuthNav();
+}
+
+function renderAuthNav() {
+  const nav = document.querySelector('header nav');
+  if (!nav) return;
+  document.getElementById('nav-auth')?.remove();
+  const el = document.createElement('a');
+  el.id = 'nav-auth';
+  el.href = '#/login';
+  if (currentUser) {
+    el.textContent = `🚪 ออกจากระบบ (${currentUser.name})`;
+    el.addEventListener('click', async (e) => {
+      e.preventDefault();
+      try { await fetch('/api/auth/logout', { method: 'POST' }); } catch { /* ignore */ }
+      clearSession();
+      location.hash = '#/login';
+      route();
+    });
+  } else {
+    el.textContent = '🔑 เข้าสู่ระบบ';
+  }
+  nav.appendChild(el);
+}
+
+function renderLoginView() {
+  app.innerHTML = '';
+  const box = document.createElement('div');
+  box.style.cssText = 'max-width:380px;margin:3rem auto;padding:1.5rem;border:1px solid var(--border,#ccc);border-radius:12px;';
+  box.innerHTML = `
+    <h2 style="margin-top:0">เข้าสู่ระบบ</h2>
+    <form id="login-form" style="display:grid;gap:.75rem">
+      <input id="login-email" type="email" placeholder="อีเมล" autocomplete="username" required />
+      <input id="login-password" type="password" placeholder="รหัสผ่าน" autocomplete="current-password" required />
+      <button type="submit">เข้าสู่ระบบ</button>
+      <div id="login-error" role="alert" style="color:#c0392b;min-height:1.2em"></div>
+    </form>`;
+  app.appendChild(box);
+  const form = box.querySelector<HTMLFormElement>('#login-form')!;
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const errEl = box.querySelector<HTMLElement>('#login-error')!;
+    errEl.textContent = '';
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'student@local' }),
+        body: JSON.stringify({
+          email: (box.querySelector('#login-email') as HTMLInputElement).value.trim(),
+          password: (box.querySelector('#login-password') as HTMLInputElement).value,
+        }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        localStorage.setItem('auth_token', data.token);
-        localStorage.setItem('auth_user', JSON.stringify(data.user));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        errEl.textContent = res.status === 429 ? 'ลองผิดหลายครั้งเกินไป กรุณารอสักครู่' : (data.error || 'เข้าสู่ระบบไม่สำเร็จ');
+        return;
       }
+      localStorage.setItem('auth_token', data.token);
+      localStorage.setItem('auth_user', JSON.stringify(data.user));
+      currentUser = data.user;
+      renderAuthNav();
+      location.hash = '#/tracks';
+      route();
     } catch {
-      // offline or server unavailable
+      errEl.textContent = 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้';
     }
-  }
+  });
 }
 
 // -------------------------------------------------------------
@@ -1068,6 +1143,12 @@ function escapeHtml(str: string) {
 function route() {
   const hash = location.hash || '#/tracks';
 
+  if (!currentUser || hash === '#/login') {
+    if (currentUser) { location.hash = '#/tracks'; return; }
+    renderLoginView();
+    return;
+  }
+
   if (hash.startsWith('#/track/')) {
     renderTrackDetail(hash.slice(8));
   } else if (hash.startsWith('#/lesson/')) {
@@ -1093,4 +1174,4 @@ function route() {
 }
 
 window.addEventListener('hashchange', route);
-ensureAuth().finally(() => route());
+loadSession().finally(() => route());

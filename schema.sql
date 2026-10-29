@@ -5,7 +5,8 @@ CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   email TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('student','admin'))
+  role TEXT NOT NULL CHECK (role IN ('student','admin')),
+  password_hash TEXT
 );
 
 CREATE TABLE IF NOT EXISTS languages (
