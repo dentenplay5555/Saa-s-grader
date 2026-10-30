@@ -126,4 +126,16 @@ describe('Judge0Adapter with mocked HTTP', () => {
     expect(res.groups[0].tests[0].verdict).toBe('JUDGE_ERROR');
     expect(res.verdict).toBe('JUDGE_ERROR');
   });
+
+  it('sends X-Auth-Token for self-hosted Judge0 and never the RapidAPI headers without a key', async () => {
+    process.env.JUDGE0_AUTH_TOKEN = 'secret-token';
+    try {
+      await new Judge0Adapter().submit(sub);
+      const headers = (fetch as any).mock.calls[0][1].headers;
+      expect(headers['X-Auth-Token']).toBe('secret-token');
+      expect(headers['X-RapidAPI-Key']).toBeUndefined();
+    } finally {
+      delete process.env.JUDGE0_AUTH_TOKEN;
+    }
+  });
 });
