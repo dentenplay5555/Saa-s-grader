@@ -1,4 +1,4 @@
-import { JudgeAdapter, JudgeProgress, JudgeResult, JudgeSubmission } from './adapter.js';
+import { acGroupsFor, JudgeAdapter, JudgeProgress, JudgeResult, JudgeSubmission } from './adapter.js';
 
 export type MockMode = 'success' | 'fail' | 'hang';
 
@@ -15,7 +15,7 @@ export class MockAdapter implements JudgeAdapter {
     } else if (this.mode === 'hang') {
       this.jobs.set(engineJobId, { status: 'RUNNING', result: { verdict: 'AC', score: 100, maxScore: 100, runtimeMs: 1, memoryKb: 1, groups: [] } });
     } else {
-      this.jobs.set(engineJobId, { status: 'DONE', result: { verdict: 'AC', score: 100, maxScore: 100, runtimeMs: 5, memoryKb: 512, groups: [{ group: 'g1', score: 100, maxScore: 100, tests: [{ index: 0, verdict: 'AC', runtimeMs: 5, memoryKb: 512 }] }] } });
+      this.jobs.set(engineJobId, { status: 'DONE', result: { verdict: 'AC', score: 100, maxScore: 100, runtimeMs: 5, memoryKb: 512, groups: acGroupsFor(input.testCases, 'g1') } });
     }
     return { engineJobId };
   }

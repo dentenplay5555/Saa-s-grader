@@ -5,7 +5,7 @@ import { FakeJudgeAdapter } from './fakeAdapter.js';
 import { Judge0Adapter } from './judge0Adapter.js';
 import { claimJob, completeJob, failJob, enqueueJob, reclaimStaleJobs } from './jobQueue.js';
 import { buildTestPlan, latestManifest, TestPlanError } from './testPlan.js';
-import { evaluateSubmissionScore, GroupOutcome, SubtaskMode } from '../scoring.js';
+import { evaluateSubmissionScore, GroupOutcome } from '../scoring.js';
 
 function createDefaultAdapter(): JudgeAdapter {
   if (process.env.NODE_ENV === 'test') return new FakeJudgeAdapter();
@@ -40,6 +40,26 @@ export function createJudging(
   const judgingId = Number(info.lastInsertRowid);
   enqueueJob(judgingId, now, database);
   return judgingId;
+}
+
+/** Throws unless result.groups contains exactly one entry per planned (group, index) test. */
+export function assertCompleteResult(planned: TestCaseData[], result: { groups: Array<{ group: string; tests: Array<{ index: number }> }> }) {
+  const key = (g: string, i: number) => `${g}#${i}`;
+  const expected = new Set(planned.map(t => key(t.group, t.index)));
+  const seen = new Set<string>();
+  const problems: string[] = [];
+  for (const g of result.groups) {
+    for (const t of g.tests) {
+      const k = key(g.group, t.index);
+      if (!expected.has(k)) problems.push(`unexpected ${k}`);
+      else if (seen.has(k)) problems.push(`duplicate ${k}`);
+      seen.add(k);
+    }
+  }
+  for (const k of expected) if (!seen.has(k)) problems.push(`missing ${k}`);
+  if (problems.length > 0) {
+    throw new Error(`Incomplete judge result (${problems.slice(0, 5).join(', ')}${problems.length > 5 ? ', …' : ''})`);
+  }
 }
 
 export async function runJudging(
@@ -88,11 +108,11 @@ export async function runJudging(
   database.prepare('UPDATE judgings SET status = ? WHERE id = ?').run('RUNNING', judgingId);
 
   let status = await adapter.getStatus(engineJobId);
-  let tries = 0;
-  while (status.status !== 'DONE' && status.status !== 'JUDGE_ERROR' && tries < 30) {
-    await new Promise(r => setTimeout(r, 50));
+  const pollMs = adapter.pollIntervalMs ?? 50;
+  const deadline = Date.now() + (adapter.maxWaitMs ?? 1500);
+  while (status.status !== 'DONE' && status.status !== 'JUDGE_ERROR' && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, pollMs));
     status = await adapter.getStatus(engineJobId);
-    tries++;
   }
 
   // Handle timeout or failure explicitly - DO NOT assume AC or read unready result!
@@ -120,45 +140,28 @@ export async function runJudging(
   // SERVER-SIDE SCORING: Compute total score and overall verdict via scoring.ts
   // The adapter's self-reported score is NEVER blindly trusted.
   // ====================================================================
-  const evaluatedGroups: GroupOutcome[] = [];
+  // The engine must report exactly the tests we asked for. A missing test must never be silently
+  // dropped (it would raise the score), and an unexpected one means we are reading the wrong result.
+  assertCompleteResult(testCases, result);
 
-  if (subtaskSpecs.length > 0) {
-    for (const spec of subtaskSpecs) {
-      const adapterGroup = result.groups.find(g => g.group === spec.name) || result.groups[0];
-      const groupTests = adapterGroup ? adapterGroup.tests : [];
-      const testMaxScore = spec.testsCount > 0 ? spec.score / spec.testsCount : spec.score;
-
-      evaluatedGroups.push({
-        name: spec.name,
-        mode: spec.mode,
-        maxScore: spec.score,
-        dependsOn: spec.dependsOn,
-        tests: groupTests.map(t => ({
-          index: t.index,
-          verdict: t.verdict,
-          score: t.verdict === 'AC' ? testMaxScore : 0,
-          maxScore: testMaxScore,
-          runtimeMs: t.runtimeMs,
-          memoryKb: t.memoryKb,
-        })),
-      });
-    }
-  } else {
-    // Default group fallback if no subtasks defined
-    evaluatedGroups.push(...result.groups.map(g => ({
-      name: g.group,
-      mode: 'all' as SubtaskMode,
-      maxScore: g.maxScore,
-      tests: g.tests.map(t => ({
+  const evaluatedGroups: GroupOutcome[] = subtaskSpecs.map(spec => {
+    const adapterGroup = result.groups.find(g => g.group === spec.name)!;
+    const testMaxScore = spec.testsCount > 0 ? spec.score / spec.testsCount : spec.score;
+    return {
+      name: spec.name,
+      mode: spec.mode,
+      maxScore: spec.score,
+      dependsOn: spec.dependsOn,
+      tests: adapterGroup.tests.map(t => ({
         index: t.index,
         verdict: t.verdict,
-        score: t.verdict === 'AC' ? (g.maxScore / Math.max(1, g.tests.length)) : 0,
-        maxScore: g.maxScore / Math.max(1, g.tests.length),
+        score: t.verdict === 'AC' ? testMaxScore : 0,
+        maxScore: testMaxScore,
         runtimeMs: t.runtimeMs,
         memoryKb: t.memoryKb,
       })),
-    })));
-  }
+    };
+  });
 
   const scoreResult = evaluateSubmissionScore(evaluatedGroups);
   const totalScore = scoreResult.totalScore;

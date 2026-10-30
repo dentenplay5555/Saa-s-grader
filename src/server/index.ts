@@ -746,7 +746,7 @@ export function startWorker(database = defaultDb, judgeAdapter = defaultAdapter,
     if (watchdogCounter >= 60) {
       watchdogCounter = 0;
       try {
-        reconcileStaleJudgings(120000, 3, database);
+        reconcileStaleJudgings(300000, 3, database); // must exceed adapter.maxWaitMs
       } catch {
         // ignore watchdog error
       }

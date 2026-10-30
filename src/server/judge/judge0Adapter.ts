@@ -17,18 +17,29 @@ const LANG: Record<string, number> = {
 };
 
 interface StoredJob {
+  judgingId: string;
+  createdAt: number;
   submittingTokens: Array<{
     token: string;
     group: string;
     index: number;
   }>;
+  /** tokens already seen in a final state, so later polls skip them */
+  finished: Set<string>;
 }
+
+const JOB_TTL_MS = 60 * 60 * 1000;
 
 export class Judge0Adapter implements JudgeAdapter {
   readonly name = 'judge0';
   readonly version = '1.13.0';
 
+  // Remote engine: poll gently and wait long enough for a real queue (override with env).
+  readonly pollIntervalMs = Number(process.env.JUDGE0_POLL_MS) || 500;
+  readonly maxWaitMs = Number(process.env.JUDGE0_MAX_WAIT_MS) || 120_000;
+
   private activeJobs = new Map<string, StoredJob>();
+  private byJudging = new Map<string, string>(); // judgingId -> engineJobId
 
   private headers() {
     const h: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -45,6 +56,12 @@ export class Judge0Adapter implements JudgeAdapter {
       throw new Error('Judge0Adapter.submit called without test cases (refusing to judge against empty input)');
     }
     const testCases: TestCaseData[] = input.testCases;
+
+    // Idempotent per judging: a retry after a poll timeout continues the SAME Judge0 submissions
+    // instead of re-sending every test (which would also leave the old ones running on the engine).
+    this.prune();
+    const existing = this.byJudging.get(input.judgingId);
+    if (existing && this.activeJobs.has(existing)) return { engineJobId: existing };
 
     const engineJobId = `j0-${input.judgingId}-${Date.now()}`;
     const submittingTokens: StoredJob['submittingTokens'] = [];
@@ -87,8 +104,22 @@ export class Judge0Adapter implements JudgeAdapter {
       });
     }
 
-    this.activeJobs.set(engineJobId, { submittingTokens });
+    this.activeJobs.set(engineJobId, { judgingId: input.judgingId, createdAt: Date.now(), submittingTokens, finished: new Set() });
+    this.byJudging.set(input.judgingId, engineJobId);
     return { engineJobId };
+  }
+
+  private prune() {
+    const cutoff = Date.now() - JOB_TTL_MS;
+    for (const [id, job] of this.activeJobs) {
+      if (job.createdAt < cutoff) this.forget(id);
+    }
+  }
+
+  private forget(engineJobId: string) {
+    const job = this.activeJobs.get(engineJobId);
+    if (job && this.byJudging.get(job.judgingId) === engineJobId) this.byJudging.delete(job.judgingId);
+    this.activeJobs.delete(engineJobId);
   }
 
   /**
@@ -100,6 +131,7 @@ export class Judge0Adapter implements JudgeAdapter {
 
     let allDone = true;
     for (const item of job.submittingTokens) {
+      if (job.finished.has(item.token)) continue;
       const r = await fetch(`${BASE}/submissions/${item.token}?base64_encoded=true&fields=status`, {
         headers: this.headers(),
       });
@@ -115,10 +147,13 @@ export class Judge0Adapter implements JudgeAdapter {
       }
       // 13 = Internal Error, 14 = Exec Format Error
       if (sid === 13 || sid === 14) {
+        this.forget(engineJobId); // a retry must resubmit from scratch
         return { status: 'JUDGE_ERROR' };
       }
       if (sid < 3) {
         allDone = false;
+      } else {
+        job.finished.add(item.token);
       }
     }
 

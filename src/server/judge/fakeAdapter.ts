@@ -1,4 +1,4 @@
-import { JudgeAdapter, JudgeProgress, JudgeResult, JudgeSubmission } from './adapter.js';
+import { acGroupsFor, JudgeAdapter, JudgeProgress, JudgeResult, JudgeSubmission } from './adapter.js';
 
 export class FakeJudgeAdapter implements JudgeAdapter {
   readonly name = 'fake';
@@ -15,7 +15,7 @@ export class FakeJudgeAdapter implements JudgeAdapter {
         maxScore: 100,
         runtimeMs: 12,
         memoryKb: 1024,
-        groups: [{ group: 'sample', score: 100, maxScore: 100, tests: [{ index: 0, verdict: 'AC', runtimeMs: 12, memoryKb: 1024 }] }],
+        groups: acGroupsFor(input.testCases, 'sample'),
       },
     });
     return { engineJobId };
