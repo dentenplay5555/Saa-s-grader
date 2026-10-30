@@ -97,3 +97,14 @@ Set / reset a password: `npm run set-password -- user@example.com [password]` (r
 Login: `POST /api/auth/login {email, password}`; 5 failures / 15 min per (ip, email) → 429.
 Problems with no valid test package: submit → 409; existing queued jobs → `JUDGE_ERROR` (never AC).
 Test package manifest must be `{ subtasks: [{ name, score, mode?, dependsOn?, tests: [{index, input, expectedOutput}] }] }`.
+
+## Judge0 timing & completeness
+
+| Variable | Default | Notes |
+|---|---|---|
+| `JUDGE0_POLL_MS` | 500 | Poll interval while waiting for results. |
+| `JUDGE0_MAX_WAIT_MS` | 120000 | Max wait per attempt before the attempt is treated as hung (then retried, max 3). |
+
+- The worker watchdog (`reconcileStaleJudgings`) runs with a 300s threshold; keep it larger than `JUDGE0_MAX_WAIT_MS`.
+- A retry of the same judging reuses the already-created Judge0 submissions (state is in memory: a server restart resubmits).
+- The coordinator requires the engine to report exactly the planned `(subtask, index)` tests; anything missing/duplicate/unexpected is a failed attempt → `JUDGE_ERROR` after retries, never a score.
