@@ -43,7 +43,14 @@ export class Judge0Adapter implements JudgeAdapter {
 
   private headers() {
     const h: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (KEY) h['X-RapidAPI-Key'] = KEY;
+    // Self-hosted Judge0 with AUTHN_TOKEN set (see deploy/judge0/judge0.conf.example)
+    const authToken = process.env.JUDGE0_AUTH_TOKEN;
+    if (authToken) h['X-Auth-Token'] = authToken;
+    // RapidAPI-hosted Judge0
+    if (KEY) {
+      h['X-RapidAPI-Key'] = KEY;
+      if (BASE.includes('rapidapi.com')) h['X-RapidAPI-Host'] = new URL(BASE).host;
+    }
     return h;
   }
 

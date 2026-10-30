@@ -1,0 +1,16 @@
+# Site A (app server). Run from deploy/app:  cp env.example .env && edit .env && docker compose up -d --build
+services:
+  app:
+    build:
+      context: ../..
+      dockerfile: deploy/app/Dockerfile
+    env_file: .env
+    environment:
+      NODE_ENV: production
+    ports:
+      - "127.0.0.1:3000:3000"   # only the local tunnel / reverse proxy talks to it
+    volumes:
+      - app-data:/data          # SQLite file lives here (back this up!)
+    restart: unless-stopped
+volumes:
+  app-data:

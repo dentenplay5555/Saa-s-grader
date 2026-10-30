@@ -1,0 +1,31 @@
+# Copy to judge0.conf and replace every CHANGE_ME (openssl rand -hex 24).
+RAILS_ENV=production
+TZ=Asia/Bangkok
+
+# Auth: the app sends this in X-Auth-Token (JUDGE0_AUTH_TOKEN on the app side)
+AUTHN_HEADER=X-Auth-Token
+AUTHN_TOKEN=CHANGE_ME
+
+REDIS_HOST=redis
+REDIS_PORT=6379
+REDIS_PASSWORD=CHANGE_ME
+
+POSTGRES_HOST=db
+POSTGRES_PORT=5432
+POSTGRES_DB=judge0
+POSTGRES_USER=judge0
+POSTGRES_PASSWORD=CHANGE_ME
+
+# Limits. DSA Academy problems use up to 256 MB / a few seconds, so the maxima must be higher than Judge0's defaults.
+CPU_TIME_LIMIT=2
+MAX_CPU_TIME_LIMIT=15
+WALL_TIME_LIMIT=5
+MAX_WALL_TIME_LIMIT=30
+MEMORY_LIMIT=256000
+MAX_MEMORY_LIMIT=512000
+MAX_QUEUE_SIZE=200
+# the app compares answers itself via expected_output; no compiler flag overrides from students
+ENABLE_COMPILER_OPTIONS=false
+ENABLE_WAIT_RESULT=false
+# keep workers modest on a small VM
+COUNT=2
