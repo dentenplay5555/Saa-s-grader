@@ -1,5 +1,6 @@
 import { OfflineStore } from './offlineStore.js';
 import { renderVisualizer, stopVisualizer } from './visualizer/ui.js';
+import { renderGame, stopGame } from './game/ui.js';
 import { VISUALIZER_FOR_LESSON } from './visualizer/engines.js';
 
 const app = document.getElementById('app')!;
@@ -1145,6 +1146,7 @@ function escapeHtml(str: string) {
 
 function route() {
   stopVisualizer();
+  stopGame();
   const hash = location.hash || '#/tracks';
 
   if (!currentUser || hash === '#/login') {
@@ -1159,6 +1161,8 @@ function route() {
     renderLessonDetail(hash.slice(9));
   } else if (hash === '#/visualizer' || hash.startsWith('#/visualizer/')) {
     renderVisualizer(app, hash.slice('#/visualizer'.length).replace(/^\//, '') || undefined);
+  } else if (hash === '#/game' || hash.startsWith('#/game/')) {
+    renderGame(app, hash.slice('#/game'.length).replace(/^\//, '') || undefined);
   } else if (hash === '#/lessons') {
     renderLessonsCatalog();
   } else if (hash.startsWith('#/p/')) {
