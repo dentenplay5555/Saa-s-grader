@@ -134,6 +134,23 @@
       }
     }
 
+    /* Narrow screens: let the header wrap instead of pushing the page sideways */
+    @media (max-width: 1000px) {
+      header {
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        padding: 0.6rem 1rem;
+      }
+      nav {
+        flex-wrap: wrap;
+        gap: 0.25rem;
+      }
+      nav a {
+        padding: 0.25rem 0.5rem;
+        font-size: 0.85rem;
+      }
+    }
+
     /* Dual Mode Layout: Focus Mode (Task 17) */
     .focus-mode-active {
       position: fixed;
@@ -509,6 +526,7 @@
     <nav>
       <a href="#/tracks" id="nav-tracks">🗺️ แผนการเรียน (Tracks)</a>
       <a href="#/lessons" id="nav-lessons">📚 บทเรียนทั้งหมด</a>
+      <a href="#/visualizer" id="nav-visualizer">🎬 ตัวจำลอง</a>
       <a href="#/problems" id="nav-problems">💻 คลังโจทย์</a>
       <a href="#/dashboard" id="nav-dashboard">📊 Dashboard</a>
       <a href="#/me" id="nav-me">⏱️ ประวัติการส่ง</a>
