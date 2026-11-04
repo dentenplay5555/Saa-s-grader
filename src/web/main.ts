@@ -1,4 +1,6 @@
 import { OfflineStore } from './offlineStore.js';
+import { renderVisualizer, stopVisualizer } from './visualizer/ui.js';
+import { VISUALIZER_FOR_LESSON } from './visualizer/engines.js';
 
 const app = document.getElementById('app')!;
 
@@ -381,7 +383,8 @@ async function renderLessonDetail(slug: string) {
             </div>
             <h1 style="margin:0 0 0.5rem 0">${escapeHtml(l.title)}</h1>
           </div>
-          <div>
+          <div style="display:flex;gap:.5rem;flex-wrap:wrap;justify-content:flex-end">
+            ${VISUALIZER_FOR_LESSON[l.slug] ? `<a class="btn-secondary" style="padding:.4rem .8rem;border-radius:6px;border:1px solid var(--border);text-decoration:none;color:var(--text)" href="#/visualizer/${VISUALIZER_FOR_LESSON[l.slug]}">🎬 ดูจำลองการทำงาน</a>` : ''}
             <button id="btn-toggle-progress" class="btn-secondary">
               ${l.userProgress === 'completed' ? '✓ เรียนจบแล้ว (Completed)' : 'ทำเครื่องหมายว่าเรียนจบ'}
             </button>
@@ -1141,6 +1144,7 @@ function escapeHtml(str: string) {
 }
 
 function route() {
+  stopVisualizer();
   const hash = location.hash || '#/tracks';
 
   if (!currentUser || hash === '#/login') {
@@ -1153,6 +1157,8 @@ function route() {
     renderTrackDetail(hash.slice(8));
   } else if (hash.startsWith('#/lesson/')) {
     renderLessonDetail(hash.slice(9));
+  } else if (hash === '#/visualizer' || hash.startsWith('#/visualizer/')) {
+    renderVisualizer(app, hash.slice('#/visualizer'.length).replace(/^\//, '') || undefined);
   } else if (hash === '#/lessons') {
     renderLessonsCatalog();
   } else if (hash.startsWith('#/p/')) {
