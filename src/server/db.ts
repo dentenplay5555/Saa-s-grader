@@ -7,7 +7,9 @@ import { VERTICAL_SLICE_LESSONS } from './curriculum/curriculumData.js';
 
 export const SCHEMA_SQL_PATH = path.join(process.cwd(), 'schema.sql');
 export const APPENDIX_SCHEMA_SQL_PATH = path.join(process.cwd(), 'schema.appendix.sql');
-const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), 'data.db');
+// Tests import this module from several parallel workers; if they all opened the same data.db file,
+// switching it to WAL mode could fail with SQLITE_BUSY ("database is locked"). So tests get a private in-memory DB.
+const DB_PATH = process.env.DB_PATH || (process.env.NODE_ENV === 'test' ? ':memory:' : path.join(process.cwd(), 'data.db'));
 
 export function initDb(targetDb: Database.Database = db) {
   const schema = fs.readFileSync(SCHEMA_SQL_PATH, 'utf8');
@@ -243,6 +245,7 @@ export function seedDb(targetDb: Database.Database = db) {
 }
 
 export const db = new Database(DB_PATH);
+db.pragma('busy_timeout = 5000'); // wait instead of failing immediately if another process holds the file
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
